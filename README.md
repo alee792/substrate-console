@@ -45,6 +45,8 @@ bin/substrate-console serve --context kind-dev --prometheus-url http://localhost
 | `--token-file` | Bearer token file (`-` for stdin) instead of minting one. |
 | `--prometheus-url` | Enables vitals history, baselines and `query_metric`. |
 | `--addr` | Listen address for `serve` (default `127.0.0.1:7878`). |
+| `--auth` | Require a token on `/mcp`. On by default when `--addr` isn't loopback. |
+| `--auth-token-file` | The token `/mcp` requires (or set `SUBSTRATE_CONSOLE_TOKEN`). Without either, `--auth` generates one. |
 | `--no-web-fonts` | Don't load Geist from Google Fonts; use system fonts. |
 
 ## Connecting an assistant
@@ -59,7 +61,9 @@ bin/substrate-console serve --context kind-dev --prometheus-url http://localhost
 }
 ```
 
-**Streamable HTTP**: run `substrate-console serve` and point the host at `http://127.0.0.1:7878/mcp`. ChatGPT needs a public HTTPS URL, so put it behind a tunnel you control. `/mcp` has no authentication of its own yet: it only accepts loopback connections and rejects cross-origin browser requests.
+**Streamable HTTP**: run `substrate-console serve` and point the host at `http://127.0.0.1:7878/mcp`. `/mcp` always rejects cross-origin browser requests.
+
+ChatGPT needs a public HTTPS URL, so put it behind a tunnel you control and turn on `--auth`. A tunnel connects from loopback, so the server can't tell it isn't you. With auth on, `/mcp` takes `Authorization: Bearer <token>`, or `?key=<token>` for hosts whose connector settings only take a URL. The query form can end up in proxy logs, so use the header where you can. `serve --auth` prints the page link as `/#token=…`. The fragment never reaches a server, and the page drops it from the address bar once read.
 
 Hosts that don't render MCP Apps (Claude Code's terminal UI today) still get every tool, because each tool also returns a readable text summary.
 
@@ -136,7 +140,7 @@ The live backend is written against Substrate v1.0.0's API but has not yet been 
 - Templates: `CreateActorTemplate` with a new version copied whole from its source (`GetActorTemplate`) and its first container, resources, selector and snapshot settings replaced; pinning a pool uses that pool's labels as the worker selector; `CreateActor` with only a template reference starts from the golden snapshot.
 - Prometheus metric names (dotted UTF-8 or underscored; the querier probes for both). kind's bundled Prometheus doesn't scrape worker-pool metrics, so capacity and running-actor history are unavailable there.
 
-Also not done yet: a full actor timeline (needs state-change events from Substrate), logs for actors that aren't running, sidebar navigation on narrow screens, authentication on `/mcp`, and a smaller view bundle (about 690 KiB, mostly the MCP SDK and zod).
+Also not done yet: a full actor timeline (needs state-change events from Substrate), logs for actors that aren't running, and OAuth on `/mcp` (it takes a static token today). The view bundle is about 400 KiB (110 KiB gzipped). Most of that is the MCP SDK and zod. The build drops zod's non-English error locales.
 
 ## License
 

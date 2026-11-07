@@ -75,6 +75,7 @@ function context(e: Entry): { text: string; data: Record<string, unknown> } {
 }
 
 const Icon = {
+  menu: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.33" stroke-linecap="round"><path d="M2.5 5h11M2.5 11h11" /></svg>,
   stack: <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.33" stroke-linejoin="round"><path d="M10 3 17 6.5 10 10 3 6.5Z" /><path d="M3 10 10 13.5 17 10" /><path d="M3 13.5 10 17 17 13.5" /></svg>,
   overview: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="5.5" /><path d="M8 5v3l2 1.5" stroke-linecap="round" /></svg>,
   actors: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2.5" y="2.5" width="4.5" height="4.5" rx="1" /><rect x="9" y="2.5" width="4.5" height="4.5" rx="1" /><rect x="2.5" y="9" width="4.5" height="4.5" rx="1" /><rect x="9" y="9" width="4.5" height="4.5" rx="1" /></svg>,
@@ -93,6 +94,14 @@ function Root() {
   const [error, setError] = useState<string | undefined>();
   const [toast, setToast] = useState<string | undefined>();
   const [connected, setConnected] = useState(false);
+  // Below 820px the sidebar becomes a drawer behind the menu button.
+  const [menu, setMenu] = useState(false);
+  useEffect(() => {
+    if (!menu) return;
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setMenu(false); };
+    addEventListener("keydown", esc);
+    return () => removeEventListener("keydown", esc);
+  }, [menu]);
   const input = useRef<Record<string, unknown>>({});
   const deepLink = useRef<string | undefined>();
 
@@ -288,8 +297,9 @@ function Root() {
   const at = (tool: string) => section === tool;
   const withScope = (a: Record<string, unknown>) => (scope ? { ...a, atespace: scope } : a);
   return (
-    <div class="app">
-      <aside class="side">
+    <div class={`app${menu ? " menu-open" : ""}`}>
+      {menu && <div class="drawer-scrim" onClick={() => setMenu(false)} />}
+      <aside class="side" id="side" onClick={(e) => { if ((e.target as Element).closest(".ni")) setMenu(false); }}>
         <div class="cluster">{Icon.stack}
           <div style={{ minWidth: 0 }}><b>{status?.cluster ?? "Substrate"}</b><span>{status ? `Substrate ${status.version ?? ""}` : ""}</span></div>
         </div>
@@ -322,6 +332,7 @@ function Root() {
       <section class="main">
         <div class="sheet">
           <div class="top">
+            <button type="button" class="btn quiet sm menu-btn cursor-interaction" onClick={() => setMenu(true)} aria-label="Menu" aria-controls="side" aria-expanded={menu}>{Icon.menu}</button>
             {back && <button type="button" class="btn quiet sm cursor-interaction" onClick={back} aria-label="Back">←</button>}
             <div class="crumb">{scope && <>{scope}<i>/</i></>}<b>{crumb(top)}</b></div>
           </div>

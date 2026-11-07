@@ -50,10 +50,64 @@ function cspFor(meta: Record<string, unknown> | undefined): string {
   ].join("; ");
 }
 
+const TOKEN_KEY = "substrate-console:token";
+
+function store(fn: () => void) { try { fn(); } catch { /* storage blocked */ } }
+
+/**
+ * The token `serve --auth` prints arrives in the URL fragment (#token=…),
+ * which is never sent to a server. Keep it for this tab and drop it from the
+ * address bar.
+ */
+function savedToken(): string {
+  const m = /(?:^#|&)token=([^&]+)/.exec(location.hash);
+  if (m) {
+    store(() => sessionStorage.setItem(TOKEN_KEY, decodeURIComponent(m[1])));
+    history.replaceState(null, "", location.pathname + location.search);
+  }
+  let t = "";
+  store(() => { t = sessionStorage.getItem(TOKEN_KEY) ?? ""; });
+  return t;
+}
+
+/** Asks for the token when /mcp turns the page away. Resolves with what was typed. */
+function askToken(status: HTMLElement, wrong: boolean): Promise<string> {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    Object.assign(input, { type: "password", placeholder: "Token", autocomplete: "off", spellcheck: false });
+    const go = el("button", { type: "button", className: "pri", textContent: "Connect" });
+    const submit = () => { if (input.value.trim()) resolve(input.value.trim()); };
+    go.onclick = submit;
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+    status.replaceChildren(el("div", { className: "auth" },
+      el("h1", { textContent: "This console needs a token" }),
+      el("p", { textContent: wrong ? "That token didn't work." : "Use the one from --auth-token-file, or the link substrate-console printed when it started." }),
+      el("div", { className: "row" }, input, go)));
+    input.focus();
+  });
+}
+
+/** Finds a token /mcp accepts, asking for one if needed. Empty when /mcp has no auth. */
+async function authorize(status: HTMLElement): Promise<string> {
+  let token = savedToken();
+  for (let tries = 0; ; tries++) {
+    const r = await fetch("/mcp", { method: "GET", headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    if (r.status !== 401) {
+      if (token) store(() => sessionStorage.setItem(TOKEN_KEY, token));
+      status.textContent = "Connecting to substrate-console…";
+      return token;
+    }
+    store(() => sessionStorage.removeItem(TOKEN_KEY));
+    token = await askToken(status, tries > 0 || token !== "");
+  }
+}
+
 async function main() {
   const status = document.getElementById("status")!;
+  const token = await authorize(status);
   const client = new Client({ name: "substrate-console-shell", version: __VERSION__ });
-  await client.connect(new StreamableHTTPClientTransport(new URL("/mcp", location.href)));
+  await client.connect(new StreamableHTTPClientTransport(new URL("/mcp", location.href),
+    token ? { requestInit: { headers: { Authorization: `Bearer ${token}` } } } : undefined));
 
   const res = await client.readResource({ uri: VIEW_URI });
   const view = res.contents[0] as { text?: string; _meta?: Record<string, unknown> };

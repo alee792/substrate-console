@@ -6,6 +6,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -44,7 +47,8 @@ type flags struct {
 	demo, readOnly                    bool
 	kubeconfig, kubeContext, endpoint string
 	tokenFile, prometheusURL, addr    string
-	noFonts                           bool
+	noFonts, auth                     bool
+	authTokenFile                     string
 }
 
 func main() {
@@ -87,7 +91,9 @@ func newFlagSet(name string, f *flags) *flag.FlagSet {
 	fs.StringVar(&f.endpoint, "endpoint", "", "ateapi address; default is a port-forward to the api Service, as kubectl ate does")
 	fs.StringVar(&f.tokenFile, "token-file", "", "file holding an ateapi bearer token; default mints an ate-client ServiceAccount token")
 	fs.StringVar(&f.prometheusURL, "prometheus-url", "", "Prometheus base URL for vitals and charts, e.g. http://localhost:9090")
-	fs.StringVar(&f.addr, "addr", "127.0.0.1:7878", "serve: address to listen on (keep it on loopback; /mcp has no auth)")
+	fs.StringVar(&f.addr, "addr", "127.0.0.1:7878", "serve: address to listen on")
+	fs.BoolVar(&f.auth, "auth", false, "serve: require a token on /mcp (on by default beyond loopback); generates one unless --auth-token-file or $SUBSTRATE_CONSOLE_TOKEN sets it")
+	fs.StringVar(&f.authTokenFile, "auth-token-file", "", "serve: file holding the token /mcp requires; implies --auth")
 	fs.BoolVar(&f.noFonts, "no-web-fonts", false, "use host and system fonts only, so the view's CSP allows no external origins")
 	return fs
 }
@@ -127,24 +133,74 @@ func run(ctx context.Context, cmd string, f flags, log *slog.Logger) error {
 	case "mcp":
 		return app.MCP().Run(ctx, &mcp.StdioTransport{})
 	case "serve":
-		host, _, err := net.SplitHostPort(f.addr)
-		if err == nil {
-			if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
-				log.Warn("listening beyond loopback: /mcp has no authentication in this version", "addr", f.addr)
-			}
+		token, generated, err := serveToken(f)
+		if err != nil {
+			return err
 		}
-		srv := &http.Server{Addr: f.addr, Handler: shell.Handler(app.MCP(), web.ShellHTML), ReadHeaderTimeout: 10 * time.Second}
+		srv := &http.Server{Addr: f.addr, Handler: shell.Handler(app.MCP(), web.ShellHTML, token), ReadHeaderTimeout: 10 * time.Second}
 		go func() {
 			<-ctx.Done()
 			sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			_ = srv.Shutdown(sctx)
 		}()
-		log.Info("console ready", "url", "http://"+f.addr+"/", "mcp", "http://"+f.addr+"/mcp")
+		page := "http://" + f.addr + "/"
+		switch {
+		case token == "":
+			log.Info("console ready", "url", page, "mcp", page+"mcp")
+		case generated:
+			// The token goes in the fragment, which browsers never send to a
+			// server, so it stays out of logs and Referer headers.
+			log.Info("console ready; /mcp needs the token below", "url", page+"#token="+token, "mcp", page+"mcp", "token", token)
+		default:
+			log.Info("console ready; /mcp needs your token", "url", page, "mcp", page+"mcp")
+		}
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			return err
 		}
 		return nil
 	}
 	return nil
+}
+
+// serveToken decides whether /mcp needs a token and returns it. Auth is on
+// when asked for, when a token is supplied, or when the address is not
+// loopback. A tunnel to loopback looks local to the server, so use --auth
+// for that.
+func serveToken(f flags) (token string, generated bool, err error) {
+	if f.authTokenFile != "" {
+		b, err := os.ReadFile(f.authTokenFile)
+		if err != nil {
+			return "", false, fmt.Errorf("read --auth-token-file: %w", err)
+		}
+		token = strings.TrimSpace(string(b))
+	} else {
+		token = strings.TrimSpace(os.Getenv("SUBSTRATE_CONSOLE_TOKEN"))
+	}
+	if token != "" {
+		if len(token) < 16 {
+			return "", false, errors.New("the /mcp token must be at least 16 characters")
+		}
+		return token, false, nil
+	}
+	if !f.auth && isLoopback(f.addr) {
+		return "", false, nil
+	}
+	b := make([]byte, 24)
+	if _, err := rand.Read(b); err != nil {
+		return "", false, err
+	}
+	return hex.EncodeToString(b), true, nil
+}
+
+func isLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
