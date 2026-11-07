@@ -1,0 +1,7 @@
+substrate-console
+Copyright 2026 The substrate-console Authors
+
+This product includes software from Agent Substrate
+(https://github.com/agent-substrate/substrate), Copyright 2026 The Agent
+Substrate Authors, licensed under the Apache License, Version 2.0. The
+adapted code is in internal/backend/ate/conn.go.
