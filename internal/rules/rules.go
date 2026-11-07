@@ -137,6 +137,7 @@ func (e *Engine) Evaluate(ctx context.Context, c *model.Cluster, scope string, m
 	all = append(all, e.workers(c)...)
 	all = append(all, e.pools(c, now)...)
 	all = append(all, e.capacity(ctx, c, metrics)...)
+	all = append(all, e.golden(c, now)...)
 
 	e.mu.Lock()
 	current := map[string]bool{}
@@ -616,4 +617,42 @@ func plural(n int, one string) string {
 		return "1 " + one
 	}
 	return fmt.Sprintf("%d %ss", n, one)
+}
+
+// A template whose golden snapshot failed: new actors from it cold-boot or
+// fail, and the controller won't retry.
+func (e *Engine) golden(c *model.Cluster, now time.Time) []Item {
+	var out []Item
+	for _, t := range c.Templates {
+		if t.Golden.State != "failed" {
+			continue
+		}
+		reason, _, _ := strings.Cut(t.Golden.Error, ":")
+		it := Item{
+			ID: "golden:" + t.Atespace + "/" + t.Name, Severity: Warning, Rule: "golden",
+			Title:     t.Name + " golden snapshot failed",
+			Facts:     []string{splitCamel(reason)},
+			atespaces: set(t.Atespace),
+			Actions:   []Action{{Label: "Open", Tool: "get_template", Args: map[string]any{"atespace": t.Atespace, "name": t.Name}}},
+		}
+		if t.CreatedAt != nil {
+			it.Since = t.CreatedAt
+			it.Facts = append(it.Facts, "created "+Ago(now, *t.CreatedAt))
+		}
+		out = append(out, it)
+	}
+	return out
+}
+
+// splitCamel turns an error reason like ImagePullFailed into "Image pull failed".
+func splitCamel(s string) string {
+	var b strings.Builder
+	for i, r := range s {
+		if i > 0 && r >= 'A' && r <= 'Z' {
+			b.WriteByte(' ')
+			r += 'a' - 'A'
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }

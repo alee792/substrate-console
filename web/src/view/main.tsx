@@ -1,8 +1,9 @@
 import { render } from "preact";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { App, applyDocumentTheme, applyHostStyleVariables, type McpUiHostContext } from "@modelcontextprotocol/ext-apps";
-import type { Action, ActionResult, Result, Status } from "./types";
+import type { Action, ActionResult, Result, Status, TemplateSpec } from "./types";
 import { ActionPage, ActorPage, ActorsPage, Confirm, MetricPage, StatusPage, isWrite, type Nav } from "./pages";
+import { DraftPage, TemplatePage, TemplatesPage } from "./templates";
 import "./styles.css";
 
 declare const __VERSION__: string;
@@ -31,8 +32,8 @@ function applyContext(ctx?: McpUiHostContext) {
 }
 
 // ChatGPT's deep links arrive as hostContext["openai/deepLink"].url, an
-// app-relative path. Routes: /, /actors, /actors/{atespace}/{name},
-// /atespaces/{atespace}, /latency.
+// app-relative path. Routes: /, /templates, /templates/{atespace}/{name},
+// /actors, /actors/{atespace}/{name}, /atespaces/{atespace}, /latency.
 function route(url: string): { tool: string; args: Record<string, unknown> } | undefined {
   const u = new URL(url, "https://app.invalid");
   const p = u.pathname.split("/").filter(Boolean).map(decodeURIComponent);
@@ -42,6 +43,8 @@ function route(url: string): { tool: string; args: Record<string, unknown> } | u
   if (p[0] === "atespaces" && p[1]) return { tool: "status", args: { atespace: p[1] } };
   if (p[0] === "actors" && p.length >= 3) return { tool: "get_actor", args: { atespace: p[1], name: p[2] } };
   if (p[0] === "actors") return { tool: "list_actors", args: { ...sc, state: u.searchParams.get("state") ?? undefined } };
+  if (p[0] === "templates" && p.length >= 3) return { tool: "get_template", args: { atespace: p[1], name: p[2] } };
+  if (p[0] === "templates") return { tool: "list_templates", args: sc };
   if (p[0] === "latency") return { tool: "query_metric", args: { metric: "resume_p95", by: "template", window: "6h", ...sc } };
   return undefined;
 }
@@ -65,6 +68,9 @@ function context(e: Entry): { text: string; data: Record<string, unknown> } {
     case "actor": return { text: `Viewing actor ${d.actor.atespace}/${d.actor.name}, ${d.actor.state}.`, data: { page: "actor", atespace: d.actor.atespace, name: d.actor.name, state: d.actor.state } };
     case "metric": return { text: `Viewing chart: ${d.title}, last ${d.window}.`, data: { page: "chart", metric: d.metric, by: d.by ?? null, window: d.window } };
     case "action": return { text: `Viewing the result of ${d.verb}: ${d.summary}`, data: { page: "action", verb: d.verb, dryRun: d.dryRun } };
+    case "templates": return { text: `Viewing ${d.templates.length} actor templates${d.scope ? " in " + d.scope : ""}.`, data: { page: "templates", atespace: d.scope || null } };
+    case "template": return { text: `Viewing template ${d.template.atespace}/${d.template.name}: ${d.template.actors} actors, ${d.template.crashed} crashed, golden snapshot ${d.template.golden.state}.`, data: { page: "template", atespace: d.template.atespace, name: d.template.name } };
+    case "draft": return { text: `Editing a template draft: ${d.spec.atespace}/${d.spec.name ?? "(unnamed)"}${d.spec.from ? `, new version of ${d.spec.from}` : ""}. It isn't created until the user clicks Create.`, data: { page: "draft", spec: d.spec } };
   }
 }
 
@@ -72,7 +78,7 @@ const Icon = {
   stack: <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.33" stroke-linejoin="round"><path d="M10 3 17 6.5 10 10 3 6.5Z" /><path d="M3 10 10 13.5 17 10" /><path d="M3 13.5 10 17 17 13.5" /></svg>,
   overview: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="5.5" /><path d="M8 5v3l2 1.5" stroke-linecap="round" /></svg>,
   actors: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2.5" y="2.5" width="4.5" height="4.5" rx="1" /><rect x="9" y="2.5" width="4.5" height="4.5" rx="1" /><rect x="2.5" y="9" width="4.5" height="4.5" rx="1" /><rect x="9" y="9" width="4.5" height="4.5" rx="1" /></svg>,
-  latency: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round"><path d="M2 12.5 6 8l3 2.5 5-6" /></svg>,
+  templates: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"><path d="M4.5 2.5h5l2.5 2.5v8.5h-7.5z" /><path d="M9.5 2.5V5H12" /><path d="M6.5 8.5h3M6.5 11h3" stroke-linecap="round" /></svg>,
   space: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2.5 5.5h11v7h-11z" /><path d="M2.5 5.5 4 3h3l1 2.5" stroke-linejoin="round" /></svg>,
 };
 
@@ -112,7 +118,7 @@ function Root() {
     app.ontoolinput = (p) => { input.current = (p.arguments ?? {}) as Record<string, unknown>; };
     app.ontoolresult = (p) => {
       const data = p.structuredContent as Result | undefined;
-      const tool = app.getHostContext()?.toolInfo?.tool.name ?? data?.kind ?? "status";
+      const tool = app.getHostContext()?.toolInfo?.tool.name ?? KIND_TOOL[data?.kind ?? "status"] ?? "status";
       if (!data || !("kind" in data)) {
         setError(p.content?.map((c) => ("text" in c ? c.text : "")).join("\n") || "The tool returned no data.");
         return;
@@ -190,6 +196,7 @@ function Root() {
   }, [full, connected]);
 
   async function act(a: Action) {
+    if (a.tool === "create_template") return go(a.tool, { ...a.args, dry_run: true });
     if (!isWrite(a.tool)) return go(a.tool, a.args);
     setError(undefined);
     try {
@@ -204,12 +211,25 @@ function Root() {
       const done = (await call(r.tool, { ...r.args, dry_run: false })) as ActionResult;
       setConfirm(undefined);
       flash(done.summary);
-      if (top?.data.kind === "action") setStack((s) => [...s.slice(0, -1), { ...top, data: done }]);
+      if (r.tool === "create_actor") await go("get_actor", { atespace: r.args.atespace, name: r.args.name });
+      else if (r.tool === "delete_template") { setStack((s) => s.slice(0, -1)); await go("list_templates", { atespace: r.args.atespace }, true); }
+      else if (top?.data.kind === "action") setStack((s) => [...s.slice(0, -1), { ...top, data: done }]);
       else await refresh();
     } catch (e) {
       setConfirm(undefined);
       setError(String((e as Error).message ?? e));
     }
+  }
+
+  // The creator submits for real; the server sends the draft back with
+  // problems marked, or the new template.
+  async function submitDraft(spec: TemplateSpec) {
+    setError(undefined);
+    try {
+      const data = await call("create_template", { ...spec, dry_run: false });
+      if (data.kind === "template") flash(`Created ${data.template.name}. Building its golden snapshot.`);
+      setStack((s) => [...s.slice(0, -1), { tool: data.kind === "template" ? "get_template" : "create_template", args: data.kind === "template" ? { atespace: data.template.atespace, name: data.template.name } : { ...spec, dry_run: true }, data }]);
+    } catch (e) { setError(String((e as Error).message ?? e)); }
   }
 
   // Questions go to the host's composer. Where ChatGPT supports it, they land
@@ -227,8 +247,8 @@ function Root() {
   }
 
   const expand = canExpand ? () => { app.requestDisplayMode({ mode: "fullscreen" }).catch(() => {}); } : undefined;
-  const nav: Nav = useMemo(() => ({ act, ask, inline: !full, expand }), [full, top, stack, canExpand]);
   const back = stack.length > 1 ? () => setStack((s) => s.slice(0, -1)) : undefined;
+  const nav: Nav = useMemo(() => ({ act, ask, inline: !full, expand, back }), [full, top, stack, canExpand]);
 
   const page = !top ? (
     <div class="loading">{error ? "" : "Loading…"}</div>
@@ -236,6 +256,9 @@ function Root() {
     : top.data.kind === "actors" ? <ActorsPage list={top.data} nav={nav} />
     : top.data.kind === "actor" ? <ActorPage d={top.data} nav={nav} />
     : top.data.kind === "metric" ? <MetricPage m={top.data} />
+    : top.data.kind === "templates" ? <TemplatesPage list={top.data} nav={nav} />
+    : top.data.kind === "template" ? <TemplatePage d={top.data} nav={nav} />
+    : top.data.kind === "draft" ? <DraftPage key={JSON.stringify(top.data.spec)} d={top.data} nav={nav} submit={submitDraft} />
     : <ActionPage r={top.data} nav={nav} onConfirm={top.data.dryRun ? () => apply(top.data as ActionResult) : undefined} />;
 
   const overlay = (
@@ -261,7 +284,8 @@ function Root() {
   }
 
   const scope = (top?.args.atespace as string) || "";
-  const at = (tool: string) => top?.tool === tool && stack.length === 1;
+  const section = ({ status: "status", templates: "list_templates", template: "list_templates", draft: "list_templates", actors: "list_actors", actor: "list_actors" } as Record<string, string>)[top?.data.kind ?? ""];
+  const at = (tool: string) => section === tool;
   const withScope = (a: Record<string, unknown>) => (scope ? { ...a, atespace: scope } : a);
   return (
     <div class="app">
@@ -270,24 +294,24 @@ function Root() {
           <div style={{ minWidth: 0 }}><b>{status?.cluster ?? "Substrate"}</b><span>{status ? `Substrate ${status.version ?? ""}` : ""}</span></div>
         </div>
         <nav class="nav">
-          <button type="button" class={`ni cursor-interaction${at("status") || at("open_console") || at("console_tab") ? " on" : ""}`} onClick={() => go("status", withScope({}), true)}>
+          <button type="button" class={`ni cursor-interaction${at("status") ? " on" : ""}`} onClick={() => go("status", withScope({}), true)}>
             {Icon.overview}Overview{status && openCount(status, scope) > 0 && <span class="ct c">{openCount(status, scope)}</span>}
+          </button>
+          <button type="button" class={`ni cursor-interaction${at("list_templates") ? " on" : ""}`} onClick={() => go("list_templates", withScope({}), true)}>
+            {Icon.templates}Templates
           </button>
           <button type="button" class={`ni cursor-interaction${at("list_actors") ? " on" : ""}`} onClick={() => go("list_actors", withScope({}), true)}>
             {Icon.actors}Actors{status && <span class="ct">{actorCount(status, scope).toLocaleString()}</span>}
-          </button>
-          <button type="button" class={`ni cursor-interaction${at("query_metric") ? " on" : ""}`} onClick={() => go("query_metric", withScope({ metric: "resume_p95", by: "template", window: "6h" }), true)}>
-            {Icon.latency}Resume latency
           </button>
         </nav>
         {status && (
           <nav class="nav">
             <h6>Atespaces</h6>
-            <button type="button" class={`ni cursor-interaction${!scope ? " on" : ""}`} onClick={() => go(top?.tool === "list_actors" ? "list_actors" : "status", {}, true)}>
+            <button type="button" class={`ni cursor-interaction${!scope ? " on" : ""}`} onClick={() => go(sameTool(top?.tool), {}, true)}>
               {Icon.space}All
             </button>
             {status.atespaces.map((a) => (
-              <button type="button" key={a.name} class={`ni cursor-interaction${scope === a.name ? " on" : ""}`} onClick={() => go(top?.tool === "list_actors" ? "list_actors" : "status", { atespace: a.name }, true)}>
+              <button type="button" key={a.name} class={`ni cursor-interaction${scope === a.name ? " on" : ""}`} onClick={() => go(sameTool(top?.tool), { atespace: a.name }, true)}>
                 {Icon.space}{a.name}{a.problems > 0 && <span class="ct c">{a.problems}</span>}
               </button>
             ))}
@@ -311,6 +335,14 @@ function Root() {
   );
 }
 
+// When the host doesn't say which tool produced the first result.
+const KIND_TOOL: Record<string, string> = { status: "status", actors: "list_actors", actor: "get_actor", metric: "query_metric", templates: "list_templates", template: "get_template", draft: "create_template" };
+
+/** Switching scope keeps you on the same list. */
+function sameTool(tool?: string) {
+  return tool === "list_actors" || tool === "list_templates" ? tool : "status";
+}
+
 function crumb(e?: Entry): string {
   if (!e) return "Substrate";
   switch (e.data.kind) {
@@ -319,6 +351,9 @@ function crumb(e?: Entry): string {
     case "actor": return e.data.actor.name;
     case "metric": return e.data.title;
     case "action": return e.data.dryRun ? "Confirm" : "Done";
+    case "templates": return "Templates";
+    case "template": return e.data.template.name;
+    case "draft": return e.data.summary;
   }
 }
 

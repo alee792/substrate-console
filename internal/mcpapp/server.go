@@ -70,8 +70,9 @@ func New(opts Options) *Server {
 
 const instructions = `substrate-console reads and operates an Agent Substrate cluster.
 Start with the status tool: it returns what needs attention and four vital signs, for the whole cluster or one atespace.
+Templates are what people author: list_templates and get_template show each template, its golden snapshot, its actors and how its versions compare. Templates are immutable, so a change is a new version: call create_template with from=<template> and dry_run=true, filling only what changes; the user reviews and edits the draft in the view before it is created.
 Use get_actor to explain a single actor (crash reason, timeline, logs). Use query_metric for ad-hoc charts instead of asking for dashboards.
-Write tools (suspend, resume, revert, delete, drain) accept dry_run; call them with dry_run=true first and show the user which actors would change.`
+Write tools (suspend, resume, revert, delete, drain, create_actor, delete_template) accept dry_run; call them with dry_run=true first and show the user what would change.`
 
 // MCP builds an *mcp.Server with every tool and the view resource.
 func (s *Server) MCP() *mcp.Server {
@@ -81,8 +82,10 @@ func (s *Server) MCP() *mcp.Server {
 	s.addEntrypoints(srv)
 	s.addMentions(srv)
 	s.addReadTools(srv)
+	s.addTemplateTools(srv)
 	if !s.opts.ReadOnly {
 		s.addWriteTools(srv)
+		s.addTemplateWrites(srv)
 	}
 	return srv
 }

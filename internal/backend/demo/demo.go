@@ -58,15 +58,31 @@ func (c *Cluster) seed() {
 	r := rand.New(rand.NewSource(7))
 	hex := func() string { return fmt.Sprintf("%04x", r.Intn(0xffff)) }
 
+	gvisor := map[string]string{"pool": "gvisor-pool-a"}
+	microvm := map[string]string{"pool": "microvm-pool-b"}
+	tmpl := func(space, name, image string, cpu, mem int64, sel map[string]string, fidelity string, age time.Duration, golden model.Golden, cmd ...string) model.Template {
+		if golden.State == "ready" {
+			golden.Tag = name + "-golden"
+			golden.Time = ago(t, age-30*time.Second)
+		}
+		return model.Template{
+			Atespace: space, Name: name, UID: fmt.Sprintf("%08x-tmpl", r.Uint32()), CreatedAt: ago(t, age),
+			Containers: []model.Container{{Name: "agent", Image: image, Command: cmd, EnvNames: []string{"LOG_LEVEL", "MODEL_ENDPOINT"}, Probe: ":8080/readyz"}},
+			Image:      image, CPUMillis: cpu, MemoryLimit: mem, WorkerSelector: sel, Fidelity: fidelity, Golden: golden,
+		}
+	}
+	ready := model.Golden{State: "ready"}
 	c.templates = []model.Template{
-		{Atespace: "triage", Name: "agent-devbox-v11", Image: "ghcr.io/example/agent-devbox:11", MemoryLimit: 2 * gib},
-		{Atespace: "triage", Name: "agent-devbox-v12", Image: "ghcr.io/example/agent-devbox:12", MemoryLimit: 4 * gib},
-		{Atespace: "ioc-enrich", Name: "mcp-enrich-v3", Image: "ghcr.io/example/mcp-enrich:3", MemoryLimit: 1 * gib},
-		{Atespace: "code-review", Name: "codex-review", Image: "ghcr.io/example/codex-review:5", MemoryLimit: 4 * gib},
+		tmpl("triage", "agent-devbox-v11", "ghcr.io/example/agent-devbox:11", 2000, 2*gib, gvisor, "memory", 9*24*time.Hour, ready, "node", "server.js"),
+		tmpl("triage", "agent-devbox-v12", "ghcr.io/example/agent-devbox:12", 2000, 4*gib, gvisor, "memory", 3*24*time.Hour, ready, "node", "server.js"),
+		tmpl("ioc-enrich", "mcp-enrich-v3", "ghcr.io/example/mcp-enrich:3", 500, 1*gib, gvisor, "memory", 12*24*time.Hour, ready, "python", "-m", "enrich.server"),
+		tmpl("ioc-enrich", "mcp-enrich-v4", "ghcr.io/example/mcp-enrich:4", 500, 1*gib, gvisor, "memory", 40*time.Minute,
+			model.Golden{State: "failed", Error: "ImagePullFailed: ghcr.io/example/mcp-enrich:4: manifest unknown"}, "python", "-m", "enrich.server"),
+		tmpl("code-review", "codex-review", "ghcr.io/example/codex-review:5", 4000, 4*gib, microvm, "rootfs", 20*24*time.Hour, ready, "codex", "app-server"),
 	}
 	c.pools = []model.Pool{
-		{Namespace: "ate-workers", Name: "gvisor-pool-a", SandboxClass: "gvisor", Desired: 40, Ready: 40},
-		{Namespace: "ate-workers", Name: "microvm-pool-b", SandboxClass: "microvm", Desired: 8, Ready: 8},
+		{Namespace: "ate-workers", Name: "gvisor-pool-a", SandboxClass: "gvisor", Labels: gvisor, Desired: 40, Ready: 40},
+		{Namespace: "ate-workers", Name: "microvm-pool-b", SandboxClass: "microvm", Labels: microvm, Desired: 8, Ready: 8},
 	}
 	for _, p := range c.pools {
 		for i := 1; i <= p.Desired; i++ {
@@ -204,7 +220,7 @@ func (c *Cluster) Snapshot(context.Context) (*model.Cluster, error) {
 	defer c.mu.Unlock()
 	c.recount()
 	out := &model.Cluster{
-		Name: "kind-sec-tools", Version: "v1.0.0", FetchedAt: c.now(),
+		Name: "demo-cluster", Version: "v1.0.0", FetchedAt: c.now(),
 		Atespaces: []string{"code-review", "ioc-enrich", "triage"},
 		Actors:    append([]model.Actor(nil), c.actors...),
 		Workers:   append([]model.Worker(nil), c.workers...),
@@ -212,33 +228,55 @@ func (c *Cluster) Snapshot(context.Context) (*model.Cluster, error) {
 		Templates: append([]model.Template(nil), c.templates...),
 	}
 	// Shift times so the demo stays "live": everything moves with the clock.
-	shift := c.shift()
-	if shift > 0 {
-		for i := range out.Actors {
-			a := &out.Actors[i]
-			for _, p := range []**time.Time{&a.StateSince, &a.LastActive, &a.CreatedAt} {
-				if *p != nil {
-					v := (*p).Add(shift)
-					*p = &v
-				}
+	for i := range out.Actors {
+		a := &out.Actors[i]
+		for _, p := range []**time.Time{&a.StateSince, &a.LastActive, &a.CreatedAt} {
+			if *p != nil {
+				v := c.mv(**p)
+				*p = &v
 			}
-			if a.Crash != nil {
-				cr := *a.Crash
-				cr.Time = cr.Time.Add(shift)
-				a.Crash = &cr
+		}
+		if a.Crash != nil {
+			cr := *a.Crash
+			cr.Time = c.mv(cr.Time)
+			a.Crash = &cr
+		}
+	}
+	now := c.now()
+	for i := range out.Templates {
+		t := &out.Templates[i]
+		if t.CreatedAt != nil {
+			v := c.mv(*t.CreatedAt)
+			t.CreatedAt = &v
+		}
+		if t.Golden.Time != nil {
+			v := c.mv(*t.Golden.Time)
+			t.Golden.Time = &v
+			// A new template's golden snapshot is ready about 25s after
+			// it is created, as the template controller's warm-up.
+			if t.Golden.State == "building" && now.After(v) {
+				t.Golden.State, t.Golden.Tag = "ready", t.Name+"-golden"
 			}
 		}
 	}
 	return out, nil
 }
 
-// shift is how far the clock has moved since the demo was built. Stored
-// times are relative to c.start, so everything read out moves by shift.
+// shift is how far the clock has moved since the demo was built. Seeded
+// times are relative to c.start, so they move by shift when read; times
+// recorded after the demo started are real and stay put.
 func (c *Cluster) shift() time.Duration {
 	if d := c.now().Sub(c.start); d > 0 {
 		return d
 	}
 	return 0
+}
+
+func (c *Cluster) mv(t time.Time) time.Time {
+	if t.Before(c.start) {
+		return t.Add(c.shift())
+	}
+	return t
 }
 
 func (c *Cluster) find(ref model.ActorRef) (int, error) {
@@ -285,8 +323,10 @@ func (c *Cluster) Timeline(_ context.Context, ref model.ActorRef) ([]model.Event
 	if a.CreatedAt != nil {
 		ev = append(ev, model.Event{Time: *a.CreatedAt, State: "created", Detail: "from " + a.Template})
 	}
-	for i := range ev {
-		ev[i].Time = ev[i].Time.Add(c.shift())
+	if t.Before(c.start) {
+		for i := range ev {
+			ev[i].Time = ev[i].Time.Add(c.shift())
+		}
 	}
 	return ev, nil
 }
@@ -319,8 +359,10 @@ func (c *Cluster) Logs(_ context.Context, ref model.ActorRef, tail int) ([]model
 			{Time: t.Add(-1 * time.Second), Source: "agent", Text: "waiting for input"},
 		}
 	}
-	for i := range lines {
-		lines[i].Time = lines[i].Time.Add(c.shift())
+	if t.Before(c.start) {
+		for i := range lines {
+			lines[i].Time = lines[i].Time.Add(c.shift())
+		}
 	}
 	if tail > 0 && len(lines) > tail {
 		lines = lines[len(lines)-tail:]
@@ -339,8 +381,7 @@ func (c *Cluster) mutate(ref model.ActorRef, f func(a *model.Actor) error) error
 }
 
 func (c *Cluster) since() *time.Time {
-	// Stored times are relative to c.start; Snapshot shifts them forward.
-	v := c.start.Add(-time.Second)
+	v := c.now()
 	return &v
 }
 
@@ -501,4 +542,74 @@ func (c *Cluster) Query(_ context.Context, q backend.MetricQuery) ([]model.Serie
 		return []model.Series{gen("running actors", func(x float64) float64 { return 30 + 8*x + wobble(x, 3, 10) })}, nil
 	}
 	return nil, fmt.Errorf("unknown metric %q", q.Metric)
+}
+
+// CreateTemplate implements backend.Backend.
+func (c *Cluster) CreateTemplate(_ context.Context, spec model.TemplateSpec, selector map[string]string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, t := range c.templates {
+		if t.Atespace == spec.Atespace && t.Name == spec.Name {
+			return fmt.Errorf("template %s/%s already exists", spec.Atespace, spec.Name)
+		}
+	}
+	now := c.now()
+	env := make([]string, 0, len(spec.Env))
+	for k := range spec.Env {
+		env = append(env, k)
+	}
+	sort.Strings(env)
+	t := model.Template{
+		Atespace: spec.Atespace, Name: spec.Name, UID: fmt.Sprintf("%08x-tmpl", now.UnixNano()&0xffffffff), CreatedAt: &now,
+		Containers: []model.Container{{Name: "agent", Image: spec.Image, Command: spec.Command, Args: spec.Args, EnvNames: env}},
+		Image:      spec.Image, CPUMillis: spec.CPUMillis, MemoryLimit: spec.MemoryMiB << 20, WorkerSelector: selector, Fidelity: spec.Fidelity,
+		Golden: model.Golden{State: "off"},
+	}
+	if spec.Golden == nil || *spec.Golden {
+		at := now.Add(25 * time.Second)
+		t.Golden = model.Golden{State: "building", Time: &at}
+	}
+	c.templates = append(c.templates, t)
+	return nil
+}
+
+// DeleteTemplate implements backend.Backend.
+func (c *Cluster) DeleteTemplate(_ context.Context, atespace, name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i, t := range c.templates {
+		if t.Atespace == atespace && t.Name == name {
+			c.templates = append(c.templates[:i], c.templates[i+1:]...)
+			return nil
+		}
+	}
+	return fmt.Errorf("template %s/%s not found", atespace, name)
+}
+
+// CreateActor implements backend.Backend.
+func (c *Cluster) CreateActor(_ context.Context, ref model.ActorRef, template string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, err := c.find(ref); err == nil {
+		return fmt.Errorf("actor %s already exists", ref)
+	}
+	var tm *model.Template
+	for i := range c.templates {
+		if c.templates[i].Atespace == ref.Atespace && c.templates[i].Name == template {
+			tm = &c.templates[i]
+		}
+	}
+	if tm == nil {
+		return fmt.Errorf("template %s/%s not found", ref.Atespace, template)
+	}
+	now := c.now()
+	a := model.Actor{
+		Atespace: ref.Atespace, Name: ref.Name, UID: fmt.Sprintf("%08x", now.UnixNano()&0xffffffff), State: model.StateSuspended,
+		StateSince: &now, CreatedAt: &now, Template: template, MemoryLimit: tm.MemoryLimit,
+	}
+	if tm.Golden.State != "failed" && tm.Golden.State != "off" {
+		a.Snapshots = []model.Snapshot{{Generation: 1, Fidelity: "memory", Storage: "durable"}}
+	}
+	c.actors = append(c.actors, a)
+	return nil
 }

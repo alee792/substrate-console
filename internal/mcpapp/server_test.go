@@ -131,7 +131,7 @@ func TestMentions(t *testing.T) {
 	cs := connect(t, true)
 	ext := cs.InitializeResult().Capabilities.Extensions["openai/mentions"].(map[string]any)
 	tool := ext["searchTool"].(string)
-	res, _ := call(t, cs, tool, map[string]any{"query": "triage-0d"})
+	res, _ := call(t, cs, tool, map[string]any{"query": "triage-0d55"})
 	items := res["items"].([]any)
 	if len(items) != 1 {
 		t.Fatalf("items = %v", items)
@@ -194,7 +194,7 @@ func TestStatusFindsTheDemoProblems(t *testing.T) {
 			t.Errorf("status items %q lack %q", joined, want)
 		}
 	}
-	if !strings.HasPrefix(txt, "cluster kind-sec-tools: 3 issues") {
+	if !strings.HasPrefix(txt, "cluster demo-cluster: 4 issues") {
 		t.Errorf("text = %q", txt)
 	}
 
@@ -242,5 +242,49 @@ func TestQueryMetric(t *testing.T) {
 	m, _ := call(t, cs, "query_metric", map[string]any{"metric": "resume_p95", "by": "template", "atespace": "triage"})
 	if n := len(m["series"].([]any)); n != 2 {
 		t.Errorf("triage templates = %d series, want 2", n)
+	}
+}
+
+func TestTemplateVersionFlow(t *testing.T) {
+	cs := connect(t, false)
+	d, _ := call(t, cs, "get_template", map[string]any{"atespace": "triage", "name": "agent-devbox-v11"})
+	tm := d["template"].(map[string]any)
+	if tm["family"] != "agent-devbox" || tm["sandboxClass"] != "gvisor" || tm["crashed"].(float64) != 3 {
+		t.Errorf("template = %v", tm)
+	}
+	if n := len(d["versions"].([]any)); n != 2 {
+		t.Errorf("versions = %d, want 2", n)
+	}
+
+	// New version: the draft is filled from the source and named v13,
+	// because v12 is taken.
+	dr, _ := call(t, cs, "create_template", map[string]any{"atespace": "triage", "from": "agent-devbox-v11", "dry_run": true})
+	spec := dr["spec"].(map[string]any)
+	if spec["name"] != "agent-devbox-v13" || spec["image"] != "ghcr.io/example/agent-devbox:11" || spec["pool"] != "gvisor-pool-a" || spec["golden"] != true {
+		t.Errorf("draft spec = %v", spec)
+	}
+	if len(dr["problems"].(map[string]any)) != 0 {
+		t.Errorf("problems = %v", dr["problems"])
+	}
+
+	bad, _ := call(t, cs, "create_template", map[string]any{"atespace": "triage", "name": "agent-devbox-v12", "image": "x", "cpuMillicores": 1000, "memoryMiB": 1024, "dry_run": true})
+	if bad["problems"].(map[string]any)["name"] == nil {
+		t.Error("taken name not flagged")
+	}
+
+	spec["image"] = "ghcr.io/example/agent-devbox:13"
+	spec["memoryMiB"] = 4096
+	created, _ := call(t, cs, "create_template", spec)
+	if created["kind"] != "template" || created["template"].(map[string]any)["golden"].(map[string]any)["state"] != "building" {
+		t.Errorf("created = %v", created["template"])
+	}
+
+	a, _ := call(t, cs, "create_actor", map[string]any{"atespace": "triage", "template": "agent-devbox-v13", "name": "triage-new1"})
+	if a["summary"] != "Created triage-new1." {
+		t.Errorf("create_actor = %v", a["summary"])
+	}
+	got, _ := call(t, cs, "get_actor", map[string]any{"atespace": "triage", "name": "triage-new1"})
+	if got["actor"].(map[string]any)["state"] != "suspended" {
+		t.Errorf("new actor = %v", got["actor"])
 	}
 }

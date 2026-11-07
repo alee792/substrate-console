@@ -13,9 +13,11 @@ import (
 	"time"
 
 	ateapi "go.ate.dev/substrate/api/ateapi/v1"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -213,16 +215,7 @@ func (l *Live) Snapshot(ctx context.Context) (*model.Cluster, error) {
 				return nil, fmt.Errorf("list templates in %s: %w", space, err)
 			}
 			for _, tm := range r.GetActorTemplates() {
-				mt := model.Template{Atespace: space, Name: tm.GetMetadata().GetName(), MemoryLimit: tm.GetResources().GetLimits().GetMemoryBytes()}
-				for _, c := range tm.GetContainers() {
-					if mt.Image == "" {
-						mt.Image = c.GetImage()
-					}
-					if mt.MemoryLimit == 0 {
-						mt.MemoryLimit += c.GetResources().GetLimits().GetMemoryBytes()
-					}
-				}
-				out.Templates = append(out.Templates, mt)
+				out.Templates = append(out.Templates, convertTemplate(tm))
 			}
 			if token = r.GetNextPageToken(); token == "" {
 				break
@@ -284,7 +277,12 @@ func (l *Live) Snapshot(ctx context.Context) (*model.Cluster, error) {
 	for _, p := range pools.Items {
 		desired, _, _ := unstructuredInt(p.Object, "spec", "replicas")
 		ready, _, _ := unstructuredInt(p.Object, "status", "readyReplicas")
-		mp := model.Pool{Namespace: p.GetNamespace(), Name: p.GetName(), Desired: int(desired), Ready: int(ready), Busy: busy[p.GetName()]}
+		mp := model.Pool{Namespace: p.GetNamespace(), Name: p.GetName(), Labels: p.GetLabels(), Desired: int(desired), Ready: int(ready), Busy: busy[p.GetName()]}
+		if classes, ok, _ := unstructured.NestedSlice(p.Object, "spec", "sandboxClasses"); ok && len(classes) > 0 {
+			if c, ok := classes[0].(map[string]any); ok {
+				mp.SandboxClass, _ = c["name"].(string)
+			}
+		}
 		if mp.Ready < mp.Desired {
 			mp.NotReadySince = notReadySince(p.Object)
 		}
@@ -421,5 +419,123 @@ func (l *Live) Drain(ctx context.Context, worker string) error {
 		return fmt.Errorf("worker %s not found", worker)
 	}
 	_, err := l.api.DrainWorker(ctx, &ateapi.DrainWorkerRequest{Worker: &ateapi.ObjectRef{Name: name}})
+	return err
+}
+
+var fidelityNames = map[ateapi.SnapshotFidelity]string{
+	ateapi.SnapshotFidelity_SNAPSHOT_FIDELITY_MEMORY:  "memory",
+	ateapi.SnapshotFidelity_SNAPSHOT_FIDELITY_ROOTFS:  "rootfs",
+	ateapi.SnapshotFidelity_SNAPSHOT_FIDELITY_VOLUMES: "volumes",
+}
+
+func convertTemplate(tm *ateapi.ActorTemplate) model.Template {
+	md := tm.GetMetadata()
+	mt := model.Template{
+		Atespace: md.GetAtespace(), Name: md.GetName(), UID: md.GetUid(),
+		CPUMillis: tm.GetResources().GetLimits().GetCpuMillicores(), MemoryLimit: tm.GetResources().GetLimits().GetMemoryBytes(),
+		WorkerSelector: tm.GetWorkerSelector().GetMatchLabels(),
+		Fidelity:       fidelityNames[tm.GetSnapshotConfig().GetPreferredFidelity()],
+	}
+	if ts := md.GetCreateTime(); ts != nil {
+		t := ts.AsTime()
+		mt.CreatedAt = &t
+	}
+	for _, c := range tm.GetContainers() {
+		mc := model.Container{Name: c.GetName(), Image: c.GetImage(), Command: c.GetCommand(), Args: c.GetArgs()}
+		for _, e := range c.GetEnv() {
+			mc.EnvNames = append(mc.EnvNames, e.GetName())
+		}
+		if h := c.GetWakeupProbe().GetHttpGet(); h != nil {
+			mc.Probe = fmt.Sprintf(":%d%s", h.GetPort(), h.GetPath())
+		}
+		mt.Containers = append(mt.Containers, mc)
+	}
+	if len(mt.Containers) > 0 {
+		mt.Image = mt.Containers[0].Image
+	}
+	gs := tm.GetStatus().GetGoldenSnapshotStatus()
+	switch {
+	case tm.GetSnapshotConfig().GetGoldenSnapshotConfig().GetMode() == ateapi.GoldenSnapshotMode_GOLDEN_SNAPSHOT_MODE_DISABLED:
+		mt.Golden.State = "off"
+	case gs.GetErrorMessage() != "":
+		mt.Golden = model.Golden{State: "failed", Error: gs.GetErrorMessage()}
+	case gs.GetGoldenTag() != nil:
+		mt.Golden = model.Golden{State: "ready", Tag: gs.GetGoldenTag().GetName()}
+	default:
+		mt.Golden.State = "building"
+	}
+	if ts := gs.GetSnapshotTime(); ts != nil {
+		t := ts.AsTime()
+		mt.Golden.Time = &t
+	}
+	return mt
+}
+
+// CreateTemplate implements backend.Backend. A new version copies the source
+// template whole and replaces its first container's image, command, args
+// and env, and the resources, selector and snapshot settings.
+func (l *Live) CreateTemplate(ctx context.Context, spec model.TemplateSpec, selector map[string]string) error {
+	t := &ateapi.ActorTemplate{}
+	if spec.From != "" {
+		src, err := l.api.GetActorTemplate(ctx, &ateapi.GetActorTemplateRequest{ActorTemplate: &ateapi.ObjectRef{Atespace: spec.Atespace, Name: spec.From}})
+		if err != nil {
+			return fmt.Errorf("read %s: %w", spec.From, err)
+		}
+		t = proto.Clone(src).(*ateapi.ActorTemplate)
+		t.Status = nil
+	}
+	t.Metadata = &ateapi.ResourceMetadata{Atespace: spec.Atespace, Name: spec.Name}
+	if len(t.Containers) == 0 {
+		t.Containers = []*ateapi.Container{{Name: "agent"}}
+	}
+	c := t.Containers[0]
+	c.Image, c.Command, c.Args = spec.Image, spec.Command, spec.Args
+	if spec.Env != nil {
+		c.Env = nil
+		keys := make([]string, 0, len(spec.Env))
+		for k := range spec.Env {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			c.Env = append(c.Env, &ateapi.EnvVar{Name: k, Value: spec.Env[k]})
+		}
+	}
+	t.Resources = &ateapi.ResourceRequirements{Limits: &ateapi.Resources{CpuMillicores: spec.CPUMillis, MemoryBytes: spec.MemoryMiB << 20}}
+	t.WorkerSelector = nil
+	if len(selector) > 0 {
+		t.WorkerSelector = &ateapi.Selector{MatchLabels: selector}
+	}
+	if t.SnapshotConfig == nil {
+		t.SnapshotConfig = &ateapi.SnapshotConfig{}
+	}
+	t.SnapshotConfig.PreferredFidelity = ateapi.SnapshotFidelity_SNAPSHOT_FIDELITY_UNSPECIFIED
+	for f, name := range fidelityNames {
+		if name == spec.Fidelity {
+			t.SnapshotConfig.PreferredFidelity = f
+		}
+	}
+	mode := ateapi.GoldenSnapshotMode_GOLDEN_SNAPSHOT_MODE_ENABLED
+	if spec.Golden != nil && !*spec.Golden {
+		mode = ateapi.GoldenSnapshotMode_GOLDEN_SNAPSHOT_MODE_DISABLED
+		t.GoldenEgressPolicy = nil
+	}
+	t.SnapshotConfig.GoldenSnapshotConfig = &ateapi.GoldenSnapshotConfig{Mode: mode}
+	_, err := l.api.CreateActorTemplate(ctx, &ateapi.CreateActorTemplateRequest{ActorTemplate: t})
+	return err
+}
+
+// DeleteTemplate implements backend.Backend.
+func (l *Live) DeleteTemplate(ctx context.Context, atespace, name string) error {
+	_, err := l.api.DeleteActorTemplate(ctx, &ateapi.DeleteActorTemplateRequest{ActorTemplate: &ateapi.ObjectRef{Atespace: atespace, Name: name}})
+	return err
+}
+
+// CreateActor implements backend.Backend.
+func (l *Live) CreateActor(ctx context.Context, r model.ActorRef, template string) error {
+	_, err := l.api.CreateActor(ctx, &ateapi.CreateActorRequest{Actor: &ateapi.Actor{
+		Metadata:      &ateapi.ResourceMetadata{Atespace: r.Atespace, Name: r.Name},
+		ActorTemplate: &ateapi.ObjectRef{Atespace: r.Atespace, Name: template},
+	}})
 	return err
 }

@@ -13,10 +13,11 @@ It is an unofficial, personal project and is not affiliated with the Substrate m
 
 The console is built around progressive disclosure:
 
-1. **Needs you.** Crashes grouped by shared cause (worker, node, template), actors stuck in a transition, unavailable workers, pools below their desired size, and capacity at 95% or more. Each item says what happened, how many actors it affects, and what to do.
-2. **Vitals.** Capacity, resume p95, density and crashes, each compared against the same time last week.
-3. **Objects.** Actors, templates and worker pools. The actor page is the center: state, crash reason, a plain-language hint (for example "4 GiB heap inside a 2 GiB sandbox"), timeline, recent logs and snapshots.
-4. **Ask.** Instead of general dashboards, the assistant answers the question and draws the chart with `query_metric`.
+1. **Issues.** Crashes grouped by shared cause (worker, node, template), actors stuck in a transition, failed golden snapshots, unavailable workers, short pools, and capacity at 95% or more.
+2. **Vitals.** Capacity, resume p95, suspended share and crashes, each against the same time last week.
+3. **Templates.** What people actually author. Each template shows its image, size, sandbox, golden snapshot, actors, and how it compares with its other versions on crashes and resume latency. Templates are immutable, so the creator makes new templates and next versions, pre-filled from the current one. The assistant can draft one from a description, and you review it in the form before anything is created.
+4. **Actors.** State, crash reason, a plain hint (for example "Node heap is set to 4 GiB; the sandbox allows 2 GiB"), timeline, logs and snapshots.
+5. **Ask.** Instead of general dashboards, the assistant answers the question and draws the chart with `query_metric`.
 
 Every view can be scoped to the whole cluster or a single atespace.
 
@@ -97,12 +98,16 @@ The local web page (`serve`, then open `/`) is itself a minimal MCP Apps host bu
 | `list_actors` | read | Filter by atespace, state (including `stuck`), template, worker, idle time. |
 | `get_actor` | read | One actor with timeline, recent logs, a hint and suggested actions. |
 | `actor_logs` | read | Tail logs of a running actor. |
-| `list_templates` | read | Actor templates and their limits. |
+| `list_templates` | read | Templates: image, size, sandbox, golden snapshot, actors, crashes, resume p95. |
+| `get_template` | read | One template, its actors, and how its versions compare. |
 | `list_worker_pools` | read | Pools, readiness and busy workers. |
 | `query_metric` | read | Resume p95, resume failure rate, crashes; by template, pool or atespace. |
 | `suspend_actors`, `resume_actors` | write | |
 | `revert_actors`, `delete_actors` | destructive | |
 | `drain_worker` | write | |
+| `create_template` | write | With `dry_run`, an editable draft; `from` makes the next version. |
+| `create_actor` | write | A suspended actor from a template. |
+| `delete_template` | destructive | |
 | `open_console`, `console_tab` | app only | Sidebar and thread entrypoints in ChatGPT. |
 | `search_mentions` | app only | Actor and atespace @-mentions in ChatGPT's composer. |
 
@@ -128,6 +133,7 @@ The live backend is written against Substrate v1.0.0's API but has not yet been 
 - `StateSince` comes from the actor's update or crash time; stuck-transition thresholds depend on that being accurate.
 - After a crash, ateapi clears the worker assignment, so crash grouping falls back to the assigned node.
 - WorkerPool `spec.replicas` and `status.readyReplicas` for the "below desired size" rule.
+- Templates: `CreateActorTemplate` with a new version copied whole from its source (`GetActorTemplate`) and its first container, resources, selector and snapshot settings replaced; pinning a pool uses that pool's labels as the worker selector; `CreateActor` with only a template reference starts from the golden snapshot.
 - Prometheus metric names (dotted UTF-8 or underscored; the querier probes for both). kind's bundled Prometheus doesn't scrape worker-pool metrics, so capacity and running-actor history are unavailable there.
 
 Also not done yet: a full actor timeline (needs state-change events from Substrate), logs for actors that aren't running, sidebar navigation on narrow screens, authentication on `/mcp`, and a smaller view bundle (about 690 KiB, mostly the MCP SDK and zod).

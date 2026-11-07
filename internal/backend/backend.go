@@ -30,6 +30,15 @@ type Backend interface {
 	Revert(ctx context.Context, ref model.ActorRef) error
 	Delete(ctx context.Context, ref model.ActorRef) error
 	Drain(ctx context.Context, worker string) error
+
+	// CreateTemplate creates an ActorTemplate from a spec. When spec.From
+	// names an existing template, its other containers and volumes carry
+	// over unchanged.
+	CreateTemplate(ctx context.Context, spec model.TemplateSpec, selector map[string]string) error
+	DeleteTemplate(ctx context.Context, atespace, name string) error
+	// CreateActor creates a suspended actor from a template; it starts from
+	// the template's golden snapshot when there is one.
+	CreateActor(ctx context.Context, ref model.ActorRef, template string) error
 }
 
 // Metric names the console knows how to query. They map to upstream

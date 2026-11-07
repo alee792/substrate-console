@@ -96,20 +96,75 @@ type Pool struct {
 	Namespace    string `json:"namespace"`
 	Name         string `json:"name"`
 	SandboxClass string `json:"sandboxClass,omitempty"`
-	Desired      int    `json:"desired"`
-	Ready        int    `json:"ready"`
+	// Labels are what a template's worker selector matches.
+	Labels  map[string]string `json:"labels,omitempty"`
+	Desired int               `json:"desired"`
+	Ready   int               `json:"ready"`
 	// Busy is the number of ready workers hosting an actor.
 	Busy int `json:"busy"`
 	// NotReadySince is when Ready first fell below Desired, when known.
 	NotReadySince *time.Time `json:"notReadySince,omitempty"`
 }
 
-// Template is one ActorTemplate.
+// Template is one ActorTemplate. Templates are immutable: a change is a
+// new template, which by convention gets a version suffix (agent-devbox-v12).
 type Template struct {
-	Atespace    string `json:"atespace"`
-	Name        string `json:"name"`
+	Atespace   string      `json:"atespace"`
+	Name       string      `json:"name"`
+	UID        string      `json:"uid,omitempty"`
+	CreatedAt  *time.Time  `json:"createdAt,omitempty"`
+	Containers []Container `json:"containers,omitempty"`
+	// Image is the first container's image, for one-line summaries.
 	Image       string `json:"image,omitempty"`
+	CPUMillis   int64  `json:"cpuMillicores,omitempty"`
 	MemoryLimit int64  `json:"memoryLimitBytes,omitempty"`
+	// WorkerSelector is matched against worker pool labels.
+	WorkerSelector map[string]string `json:"workerSelector,omitempty"`
+	// Fidelity is the snapshot fidelity every suspend captures.
+	Fidelity string `json:"fidelity,omitempty"` // memory, rootfs, volumes, or "" for the default
+	Golden   Golden `json:"golden"`
+}
+
+// Container is one container in a template. Env values are never read.
+type Container struct {
+	Name     string   `json:"name"`
+	Image    string   `json:"image"`
+	Command  []string `json:"command,omitempty"`
+	Args     []string `json:"args,omitempty"`
+	EnvNames []string `json:"envNames,omitempty"`
+	Probe    string   `json:"probe,omitempty"` // wakeup probe, e.g. ":8080/readyz"
+}
+
+// Golden is the template's golden snapshot: a booted, warmed-up actor that
+// new actors start from instead of a cold boot.
+type Golden struct {
+	State string     `json:"state"` // ready, building, failed, off
+	Tag   string     `json:"tag,omitempty"`
+	Time  *time.Time `json:"time,omitempty"`
+	Error string     `json:"error,omitempty"`
+}
+
+// TemplateSpec is what a person fills in to create a template. It covers
+// one container, which is what most agents need; "new version" of a
+// multi-container template keeps the others as they are.
+type TemplateSpec struct {
+	Atespace  string            `json:"atespace" jsonschema:"atespace to create the template in"`
+	Name      string            `json:"name,omitempty" jsonschema:"template name; lowercase, digits, dashes. With from, defaults to the next version"`
+	Image     string            `json:"image,omitempty" jsonschema:"container image, ideally pinned by digest"`
+	Command   []string          `json:"command,omitempty" jsonschema:"container entrypoint"`
+	Args      []string          `json:"args,omitempty"`
+	Env       map[string]string `json:"env,omitempty" jsonschema:"environment variables; with from, omit to keep the source's"`
+	CPUMillis int64             `json:"cpuMillicores,omitempty" jsonschema:"CPU limit in millicores (1000 = one core)"`
+	MemoryMiB int64             `json:"memoryMiB,omitempty" jsonschema:"memory limit in MiB"`
+	// Pool pins the template to one worker pool (and so its sandbox class)
+	// through that pool's labels. Empty means any pool.
+	Pool     string `json:"pool,omitempty" jsonschema:"worker pool to pin to (sets the sandbox class); omit for any pool"`
+	Fidelity string `json:"fidelity,omitempty" jsonschema:"snapshot fidelity: memory, rootfs or volumes"`
+	// Golden builds a golden snapshot for new actors to start from. Nil
+	// means the default: on, or the source's setting for a new version.
+	Golden *bool `json:"golden,omitempty" jsonschema:"build a golden snapshot new actors start from; default on"`
+	// From is the template this one is a new version of, if any.
+	From string `json:"from,omitempty" jsonschema:"existing template this is a new version of"`
 }
 
 // Cluster is everything the console reads in one poll.

@@ -18,7 +18,30 @@ export interface Actor {
 }
 
 export interface Pool { namespace: string; name: string; sandboxClass?: string; desired: number; ready: number; busy: number }
-export interface Template { atespace: string; name: string; image?: string; memoryLimitBytes?: number }
+
+export interface Container { name: string; image: string; command?: string[]; args?: string[]; envNames?: string[]; probe?: string }
+export interface Golden { state: "ready" | "building" | "failed" | "off"; tag?: string; time?: string; error?: string }
+export interface Template {
+  atespace: string; name: string; uid?: string; createdAt?: string; containers?: Container[]; image?: string;
+  cpuMillicores?: number; memoryLimitBytes?: number; workerSelector?: Record<string, string>; fidelity?: string; golden: Golden;
+}
+export interface TemplateRow extends Template {
+  family: string; version?: string; sandboxClass?: string; pools: string[];
+  actors: number; running: number; suspended: number; crashed: number; resumeP95Ms?: number;
+}
+export interface TemplateList { kind: "templates"; scope: string; templates: TemplateRow[] }
+export interface TemplateDetail {
+  kind: "template"; template: TemplateRow; versions: TemplateRow[]; actors: Actor[];
+  latency?: MetricResult; hint?: string; actions: Action[];
+}
+export interface TemplateSpec {
+  atespace: string; name?: string; image?: string; command?: string[]; args?: string[]; env?: Record<string, string>;
+  cpuMillicores?: number; memoryMiB?: number; pool?: string; fidelity?: string; golden?: boolean; from?: string;
+}
+export interface Draft {
+  kind: "draft"; spec: TemplateSpec; problems: Record<string, string>; summary: string;
+  atespaces: string[]; pools: { name: string; sandboxClass?: string; pinnable: boolean }[]; carried?: string[];
+}
 export interface Point { t: string; v: number }
 export interface Series { label: string; points: Point[] }
 
@@ -62,7 +85,7 @@ export interface MetricResult {
 export interface ActionResult {
   kind: "action"; verb: string; tool: string; dryRun: boolean; summary: string;
   targets: (ActorRef & { state: ActorState; ok: boolean; reason?: string })[];
-  args: Record<string, unknown>;
+  args: Record<string, unknown>; note?: string;
 }
 
-export type Result = Status | ActorList | ActorDetail | MetricResult | ActionResult;
+export type Result = Status | ActorList | ActorDetail | MetricResult | ActionResult | TemplateList | TemplateDetail | Draft;

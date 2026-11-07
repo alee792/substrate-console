@@ -129,13 +129,6 @@ func (s *Server) addReadTools(srv *mcp.Server) {
 	}, s.actorLogs)
 
 	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "list_templates",
-		Description: "Actor templates, with how many actors use each and how many of those crashed.",
-		Annotations: readOnly("List templates"),
-		Meta:        textToolMeta("Listing templates…", "Listed templates"),
-	}, s.listTemplates)
-
-	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_worker_pools",
 		Description: "Worker pools with desired, ready and busy workers, and any worker that is draining or unavailable.",
 		Annotations: readOnly("List worker pools"),
@@ -535,47 +528,6 @@ func (s *Server) actorLogs(ctx context.Context, _ *mcp.CallToolRequest, in LogsI
 		fmt.Fprintf(&b, "%s %s: %s\n", l.Time.Format(time.RFC3339), l.Source, l.Text)
 	}
 	return &mcp.CallToolResult{Content: text(b.String())}, map[string]any{"kind": "logs", "actor": ref, "lines": lines}, nil
-}
-
-func (s *Server) listTemplates(ctx context.Context, _ *mcp.CallToolRequest, in ScopeIn) (*mcp.CallToolResult, any, error) {
-	c, err := s.snapshot(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-	type row struct {
-		model.Template
-		Actors  int `json:"actors"`
-		Running int `json:"running"`
-		Crashed int `json:"crashed"`
-	}
-	var rows []row
-	for _, t := range c.Templates {
-		if in.Atespace != "" && t.Atespace != in.Atespace {
-			continue
-		}
-		r := row{Template: t}
-		for _, a := range c.Actors {
-			if a.Atespace == t.Atespace && a.Template == t.Name {
-				r.Actors++
-				switch a.State {
-				case model.StateRunning:
-					r.Running++
-				case model.StateCrashed:
-					r.Crashed++
-				}
-			}
-		}
-		rows = append(rows, r)
-	}
-	var b strings.Builder
-	for _, r := range rows {
-		fmt.Fprintf(&b, "- %s/%s: %d actors, %d running, %d crashed", r.Atespace, r.Name, r.Actors, r.Running, r.Crashed)
-		if r.MemoryLimit > 0 {
-			fmt.Fprintf(&b, ", memory limit %s", bytes(r.MemoryLimit))
-		}
-		b.WriteString("\n")
-	}
-	return &mcp.CallToolResult{Content: text(b.String())}, map[string]any{"kind": "templates", "templates": rows}, nil
 }
 
 func (s *Server) listPools(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {

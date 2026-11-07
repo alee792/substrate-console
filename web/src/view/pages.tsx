@@ -10,15 +10,18 @@ export interface Nav {
   ask(prompt: string): void;
   /** Open the full console, when the host allows it. */
   expand?: () => void;
+  /** Go back one page. */
+  back?: () => void;
   inline: boolean;
+  readOnly?: boolean;
 }
 
-const WRITE_TOOLS = new Set(["suspend_actors", "resume_actors", "revert_actors", "delete_actors", "drain_worker"]);
+const WRITE_TOOLS = new Set(["suspend_actors", "resume_actors", "revert_actors", "delete_actors", "drain_worker", "create_actor", "delete_template"]);
 export const isWrite = (tool: string) => WRITE_TOOLS.has(tool);
 
 const cap = (s: string) => s[0].toUpperCase() + s.slice(1);
 
-function Btn({ a, nav, sm }: { a: Action; nav: Nav; sm?: boolean }) {
+export function Btn({ a, nav, sm }: { a: Action; nav: Nav; sm?: boolean }) {
   return (
     <button type="button" class={`btn cursor-interaction${a.primary ? " pri" : ""}${sm ? " sm" : ""}`}
       onClick={(e) => { e.stopPropagation(); nav.act(a); }}>
@@ -27,7 +30,7 @@ function Btn({ a, nav, sm }: { a: Action; nav: Nav; sm?: boolean }) {
   );
 }
 
-function Hero({ eyebrow, title, mono, sub, children }: { eyebrow?: string; title: string; mono?: boolean; sub?: preact.ComponentChildren; children?: preact.ComponentChildren }) {
+export function Hero({ eyebrow, title, mono, sub, children }: { eyebrow?: string; title: string; mono?: boolean; sub?: preact.ComponentChildren; children?: preact.ComponentChildren }) {
   return (
     <header class="hero">
       <div style={{ minWidth: 0 }}>
@@ -41,7 +44,7 @@ function Hero({ eyebrow, title, mono, sub, children }: { eyebrow?: string; title
   );
 }
 
-function Sec({ title, right, children }: { title: string; right?: string; children: preact.ComponentChildren }) {
+export function Sec({ title, right, children }: { title: string; right?: string; children: preact.ComponentChildren }) {
   return (
     <section>
       <div class="sec"><h2>{title}</h2>{right && <span class="r">{right}</span>}</div>
@@ -158,7 +161,7 @@ function stateLabel(a: Actor): string {
   return cap(a.state);
 }
 
-function StatePill({ a }: { a: Actor }) {
+export function StatePill({ a }: { a: Actor }) {
   return <span class={`st ${a.state}${a.needsYou && a.state !== "crashed" ? " stuck" : ""}`}>{stateLabel(a)}</span>;
 }
 
@@ -309,14 +312,15 @@ const CONSEQUENCE: Record<string, string> = {
 
 export function Confirm({ r, onConfirm, onCancel, busy }: { r: ActionResult; onConfirm?: () => void; onCancel?: () => void; busy?: boolean }) {
   const ok = r.targets.filter((t) => t.ok).length;
-  const destructive = r.verb === "delete" || r.verb === "revert" || r.verb === "drain";
+  const destructive = r.verb.startsWith("delete") || r.verb === "revert" || r.verb === "drain";
+  const label = r.targets.length === 0 ? cap(r.verb) : r.verb === "create" ? "Create actor" : `${cap(r.verb)} ${ok === 1 ? "actor" : `${ok} actors`}`;
   return (
     <div class="confirm" role="dialog" aria-label={`Confirm ${r.verb}`}>
       <div>
         <h2>{r.summary}</h2>
-        {ok > 0 && CONSEQUENCE[r.verb] && <p style={{ marginTop: 4 }}>{CONSEQUENCE[r.verb]}</p>}
+        {(r.note || (ok > 0 && CONSEQUENCE[r.verb])) && <p style={{ marginTop: 4 }}>{r.note || CONSEQUENCE[r.verb]}</p>}
       </div>
-      <ul>
+      {r.targets.length > 0 && <ul>
         {r.targets.map((t) => (
           <li key={t.atespace + t.name}>
             <span class={`st ${t.state}`} />
@@ -324,12 +328,12 @@ export function Confirm({ r, onConfirm, onCancel, busy }: { r: ActionResult; onC
             {!t.ok && <span class="why">{t.reason}</span>}
           </li>
         ))}
-      </ul>
+      </ul>}
       <div class="acts">
         {onCancel && <button type="button" class="btn quiet cursor-interaction" onClick={onCancel}>Cancel</button>}
-        {onConfirm && ok > 0 && (
+        {onConfirm && (ok > 0 || r.targets.length === 0) && (
           <button type="button" class={`btn cursor-interaction ${destructive ? "danger" : "pri"}`} disabled={busy} onClick={onConfirm}>
-            {busy ? "Working…" : `${cap(r.verb)} ${ok === 1 ? "actor" : `${ok} actors`}`}
+            {busy ? "Working…" : label}
           </button>
         )}
       </div>

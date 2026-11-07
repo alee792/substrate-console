@@ -38,6 +38,8 @@ type ActionResult struct {
 	DryRun  bool     `json:"dryRun"`
 	Summary string   `json:"summary"`
 	Targets []Target `json:"targets"`
+	// Note is a sentence about consequences the view shows above Confirm.
+	Note string `json:"note,omitempty"`
 	// Args repeats the call so a view can confirm a dry run by calling the
 	// tool again with dry_run=false.
 	Args map[string]any `json:"args"`
