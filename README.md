@@ -62,15 +62,30 @@ bin/substrate-console serve --context kind-dev --prometheus-url http://localhost
 
 Hosts that don't render MCP Apps (Claude Code's terminal UI today) still get every tool, because each tool also returns a readable text summary.
 
-## MCP Apps and the OpenAI Apps SDK
+## MCP Apps and OpenAI extensions
 
-The server implements the [MCP Apps extension](https://github.com/modelcontextprotocol/ext-apps) (`io.modelcontextprotocol/ui`, spec 2026-01-26) and the OpenAI Apps SDK metadata, so one view works in both families of hosts.
+The server implements the [MCP Apps extension](https://github.com/modelcontextprotocol/ext-apps) (`io.modelcontextprotocol/ui`, spec 2026-01-26), the OpenAI Apps SDK `openai/*` keys, and the [OpenAI MCP Extensions](https://github.com/openai/mcp-extensions/blob/main/docs/spec.md) that fit a console. Other hosts ignore the OpenAI keys.
 
-- **View resource.** `ui://substrate-console/console.html`, mimeType `text/html;profile=mcp-app`, a single self-contained HTML file. `_meta.ui.csp` (`resourceDomains` for fonts, no `connectDomains`) and `_meta.ui.prefersBorder` are set, mirrored as `openai/widgetCSP`, `openai/widgetPrefersBorder` and `openai/widgetDescription`.
-- **Tools.** Tools with a view carry `_meta.ui.resourceUri` and `_meta.ui.visibility: ["model", "app"]`, plus the deprecated flat `ui/resourceUri` key for older hosts, and `openai/outputTemplate`, `openai/widgetAccessible` and `openai/toolInvocation/invoking|invoked`. Every tool sets `readOnlyHint`, `destructiveHint` and `openWorldHint`.
-- **Results.** `structuredContent` (with a `kind` field) drives the view; `content` is a text summary the model can read.
-- **View behavior.** The view uses `@modelcontextprotocol/ext-apps`: it follows the host's theme and style variables, calls tools through the host to navigate, requests fullscreen from an inline card, sends follow-up questions with `ui/message`, and keeps the model told what the user is looking at with `ui/update-model-context`. It polls only in fullscreen.
-- **Writes.** Every write tool takes `dry_run`. The view always does a dry run first and shows what will change before applying it. `revert_actors` and `delete_actors` are marked destructive.
+**MCP Apps**
+
+- **Views.** One self-contained HTML bundle, declared twice with `text/html;profile=mcp-app`: `ui://substrate-console/console.html` for the full console and `ui://substrate-console/card.html` for cards in a conversation. Both set `_meta.ui.csp` (`resourceDomains` for fonts only, no `connectDomains`) and `prefersBorder`.
+- **Tools.** Tools with a view carry `_meta.ui.resourceUri` and `_meta.ui.visibility`, plus the deprecated flat `ui/resourceUri` key. Every tool sets `readOnlyHint`, `destructiveHint` and `openWorldHint`. `structuredContent` (with a `kind` field) drives the view; `content` is a text summary for the model.
+- **View.** Follows the host's theme, style variables and safe-area insets. It navigates by calling tools through the host, and it keeps the model told what the user is looking at with `ui/update-model-context`. That context is background context (`audience: ["assistant"]`) with `structuredContent`. It polls only in full screen.
+
+**OpenAI Apps SDK keys**
+
+- `openai/outputTemplate`, `openai/widgetAccessible`, `openai/toolInvocation/invoking|invoked`, `openai/widgetCSP`, `openai/widgetPrefersBorder` and `openai/widgetDescription`.
+
+**OpenAI MCP Extensions**
+
+- **Display modes.** Each view resource sets `_meta["openai/ui"]`. The console prefers `fullscreen` and the card prefers `inline`, so ChatGPT picks the mode before the view loads. The view has no expand or collapse buttons, because the host provides them. An inline card's "Open console" link calls `requestDisplayMode` when the user clicks it.
+- **Entrypoints.** `open_console` is the sidebar (`global`) entrypoint and `console_tab` is the thread entrypoint. There is one tool per entrypoint, and both accept `{}`, are app-only and carry a title and light and dark 20×20 icons. The overview is cached in `localStorage`, so the sidebar entrypoint paints at once and then refreshes.
+- **Deep links.** The view reads `hostContext["openai/deepLink"].url` and routes these paths: `/`, `/actors`, `/actors/{atespace}/{name}`, `/atespaces/{atespace}` and `/latency`.
+- **Composer @-mentions.** The server advertises `openai/mentions` with `searchTool: "search_mentions"` (in both `extensions` and `experimental`). The tool returns `resource_link`s to `substrate://actors/{atespace}/{name}` and `substrate://atespaces/{atespace}`, and resource templates make both readable.
+- **Messages.** "Ask" sends `ui/message`. When the host advertises `openai/message`, the question lands in the composer as an editable draft (`send: false`) instead of sending at once.
+- **Not used.** File entrypoints, file resources, form elicitation and WebMCP don't fit a cluster console. Structured settings may come later, once there are settings worth having.
+
+**Writes.** Every write tool takes `dry_run`. The view always does a dry run first and shows what will change before applying it. `revert_actors` and `delete_actors` are marked destructive.
 
 The local web page (`serve`, then open `/`) is itself a minimal MCP Apps host built on `AppBridge`: it reads the view resource over `/mcp`, applies the resource's CSP, and loads it into a sandboxed iframe. `?mode=inline&tool=get_actor&args={...}` previews the inline card.
 
@@ -88,6 +103,8 @@ The local web page (`serve`, then open `/`) is itself a minimal MCP Apps host bu
 | `suspend_actors`, `resume_actors` | write | |
 | `revert_actors`, `delete_actors` | destructive | |
 | `drain_worker` | write | |
+| `open_console`, `console_tab` | app only | Sidebar and thread entrypoints in ChatGPT. |
+| `search_mentions` | app only | Actor and atespace @-mentions in ChatGPT's composer. |
 
 ## Layout
 

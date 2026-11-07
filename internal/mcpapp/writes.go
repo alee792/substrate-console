@@ -185,9 +185,9 @@ func (s *Server) drain(ctx context.Context, _ *mcp.CallToolRequest, in DrainIn) 
 		s.invalidate()
 	}
 	if in.DryRun {
-		res.Summary = fmt.Sprintf("Draining %s would suspend %d running actors and stop new placements there.", in.Worker, len(res.Targets))
+		res.Summary = fmt.Sprintf("Drain %s? Its %d running actors will be suspended.", in.Worker, len(res.Targets))
 	} else {
-		res.Summary = fmt.Sprintf("Drained %s; %d running actors were suspended.", in.Worker, len(res.Targets))
+		res.Summary = fmt.Sprintf("Drained %s. Suspended %d actors.", in.Worker, len(res.Targets))
 	}
 	return &mcp.CallToolResult{Content: text(actionText(res))}, res, nil
 }
@@ -209,15 +209,15 @@ func summarize(name, past string, r ActionResult) string {
 	}
 	var s string
 	if r.DryRun {
-		s = fmt.Sprintf("This would %s %s.", name, noun(ok))
+		s = fmt.Sprintf("%s %s?", strings.ToUpper(name[:1])+name[1:], noun(ok))
 		if skip > 0 {
-			s += fmt.Sprintf(" %s would be skipped.", noun(skip))
+			s += fmt.Sprintf(" %d skipped.", skip)
 		}
 		return s
 	}
 	s = fmt.Sprintf("%s %s.", strings.ToUpper(past[:1])+past[1:], noun(ok))
 	if skip > 0 {
-		s += fmt.Sprintf(" %s failed or were skipped.", noun(skip))
+		s += fmt.Sprintf(" %d skipped.", skip)
 	}
 	return s
 }

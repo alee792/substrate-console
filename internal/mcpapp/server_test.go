@@ -73,7 +73,7 @@ func TestToolsDeclareTheView(t *testing.T) {
 			continue
 		}
 		if withView[tool.Name] {
-			if ui["resourceUri"] != mcpapp.ViewURI || tool.Meta["openai/outputTemplate"] != mcpapp.ViewURI {
+			if ui["resourceUri"] != mcpapp.CardURI || tool.Meta["openai/outputTemplate"] != mcpapp.CardURI {
 				t.Errorf("%s: view not linked: %v", tool.Name, tool.Meta)
 			}
 		}
@@ -85,6 +85,67 @@ func TestToolsDeclareTheView(t *testing.T) {
 	}
 	if seen["delete_actors"] != true {
 		t.Error("write tools missing")
+	}
+}
+
+func TestOpenAIEntrypoints(t *testing.T) {
+	cs := connect(t, true)
+	res, _ := cs.ListTools(context.Background(), nil)
+	kinds := map[string]string{}
+	for _, tool := range res.Tools {
+		oui, _ := tool.Meta["openai/ui"].(map[string]any)
+		eps, _ := oui["entrypoints"].([]any)
+		for _, e := range eps {
+			kinds[e.(map[string]any)["type"].(string)] = tool.Name
+			ui := tool.Meta["ui"].(map[string]any)
+			if ui["resourceUri"] != mcpapp.ViewURI {
+				t.Errorf("%s: entrypoint must open the full view", tool.Name)
+			}
+			if tool.Title == "" || len(tool.Icons) == 0 {
+				t.Errorf("%s: entrypoint needs a title and icons", tool.Name)
+			}
+		}
+	}
+	if kinds["global"] == "" || kinds["thread"] == "" || kinds["global"] == kinds["thread"] {
+		t.Errorf("want separate global and thread entrypoint tools, got %v", kinds)
+	}
+	// Entrypoints are opened with {}.
+	st, _ := call(t, cs, kinds["global"], map[string]any{})
+	if st["kind"] != "status" {
+		t.Errorf("global entrypoint kind = %v", st["kind"])
+	}
+
+	for uri, want := range map[string]string{mcpapp.ViewURI: "fullscreen", mcpapp.CardURI: "inline"} {
+		r, err := cs.ReadResource(context.Background(), &mcp.ReadResourceParams{URI: uri})
+		if err != nil {
+			t.Fatal(err)
+		}
+		oui := r.Contents[0].Meta["openai/ui"].(map[string]any)
+		if oui["preferredDisplayMode"] != want {
+			t.Errorf("%s preferredDisplayMode = %v, want %s", uri, oui["preferredDisplayMode"], want)
+		}
+	}
+}
+
+func TestMentions(t *testing.T) {
+	cs := connect(t, true)
+	ext := cs.InitializeResult().Capabilities.Extensions["openai/mentions"].(map[string]any)
+	tool := ext["searchTool"].(string)
+	res, _ := call(t, cs, tool, map[string]any{"query": "triage-0d"})
+	items := res["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("items = %v", items)
+	}
+	it := items[0].(map[string]any)
+	if it["type"] != "resource_link" || it["uri"] != "substrate://actors/triage/triage-0d55" {
+		t.Errorf("item = %v", it)
+	}
+	r, err := cs.ReadResource(context.Background(), &mcp.ReadResourceParams{URI: it["uri"].(string)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(r.Contents[0].Text, "triage/triage-0d55") {
+		t.Errorf("actor resource = %q", r.Contents[0].Text)
 	}
 }
 
@@ -128,12 +189,12 @@ func TestStatusFindsTheDemoProblems(t *testing.T) {
 		titles = append(titles, it.(map[string]any)["title"].(string))
 	}
 	joined := strings.Join(titles, "|")
-	for _, want := range []string{"3 actors crashed on worker w-03", "ioc-enrich-02 has been resuming for 9 minutes", "4.1% of resumes failed for lack of capacity"} {
+	for _, want := range []string{"3 crashes on w-03", "ioc-enrich-02 stuck resuming", "gvisor-pool-a full, resumes failing"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("status items %q lack %q", joined, want)
 		}
 	}
-	if !strings.HasPrefix(txt, "cluster kind-sec-tools: 3 things need you") {
+	if !strings.HasPrefix(txt, "cluster kind-sec-tools: 3 issues") {
 		t.Errorf("text = %q", txt)
 	}
 
@@ -149,7 +210,7 @@ func TestGetActorExplainsTheCrash(t *testing.T) {
 	cs := connect(t, false)
 	d, txt := call(t, cs, "get_actor", map[string]any{"atespace": "triage", "name": "triage-0d55"})
 	hint, _ := d["hint"].(string)
-	if !strings.Contains(hint, "4 GiB heap inside a 2 GiB sandbox") {
+	if !strings.Contains(hint, "heap is set to 4 GiB; the sandbox allows 2 GiB") {
 		t.Errorf("hint = %q", hint)
 	}
 	if !strings.Contains(txt, "is crashed") {
@@ -161,7 +222,7 @@ func TestRevertDryRunThenApply(t *testing.T) {
 	cs := connect(t, false)
 	args := map[string]any{"actors": []map[string]string{{"atespace": "triage", "name": "triage-0d55"}, {"atespace": "triage", "name": "triage-7f3a"}}, "dry_run": true}
 	r, _ := call(t, cs, "revert_actors", args)
-	if r["summary"] != "This would revert 1 actor. 1 actor would be skipped." {
+	if r["summary"] != "Revert 1 actor? 1 skipped." {
 		t.Errorf("dry run summary = %v", r["summary"])
 	}
 	before, _ := call(t, cs, "get_actor", map[string]any{"atespace": "triage", "name": "triage-0d55"})

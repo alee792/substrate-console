@@ -188,7 +188,7 @@ func statusText(st rules.Status) string {
 	}
 	b.WriteString("Vitals:")
 	for _, v := range st.Vitals {
-		fmt.Fprintf(&b, " %s %s %s", v.Label, v.Value, v.Unit)
+		fmt.Fprintf(&b, " %s %s", v.Label, strings.TrimSpace(v.Value+" "+v.Unit))
 		if v.Note != "" {
 			fmt.Fprintf(&b, " (%s)", v.Note)
 		}
@@ -369,11 +369,7 @@ func templateHint(c *model.Cluster, atespace string) string {
 		for k2, v2 := range per {
 			space2, tmpl2, _ := strings.Cut(k2, "/")
 			if space2 == space && tmpl2 != tmpl && v2.crashed == 0 && v2.total >= 5 {
-				all := fmt.Sprintf("All %d crashed actors", v.crashed)
-				if v.crashed == 2 {
-					all = "Both crashed actors"
-				}
-				return fmt.Sprintf("%s in %s run %s; none of the %d on %s have crashed.", all, space, tmpl, v2.total, tmpl2)
+				return fmt.Sprintf("Only %s is crashing in %s. %s has %d actors and no crashes.", tmpl, space, tmpl2, v2.total)
 			}
 		}
 	}
@@ -488,21 +484,21 @@ func actorHint(c *model.Cluster, a model.Actor, t *model.Template, logs []model.
 				var mb int64
 				fmt.Sscanf(l.Text[i+len("--max-old-space-size="):], "%d", &mb)
 				if mb<<20 > t.MemoryLimit {
-					parts = append(parts, fmt.Sprintf("The process asked for a %s heap inside a %s sandbox.", bytes(mb<<20), bytes(t.MemoryLimit)))
+					parts = append(parts, fmt.Sprintf("Node heap is set to %s; the sandbox allows %s.", bytes(mb<<20), bytes(t.MemoryLimit)))
 				}
 			}
 		}
 		if len(parts) == 0 {
-			parts = append(parts, fmt.Sprintf("It hit the template's %s memory limit.", bytes(t.MemoryLimit)))
+			parts = append(parts, fmt.Sprintf("Hit the %s memory limit.", bytes(t.MemoryLimit)))
 		}
 		for _, t2 := range c.Templates {
 			if t2.Atespace == a.Atespace && t2.Name != t.Name && t2.MemoryLimit > t.MemoryLimit {
-				parts = append(parts, fmt.Sprintf("%s allows %s; reverting on %s will likely crash again.", t2.Name, bytes(t2.MemoryLimit), t.Name))
+				parts = append(parts, fmt.Sprintf("A revert keeps the same limit. %s allows %s.", t2.Name, bytes(t2.MemoryLimit)))
 				break
 			}
 		}
 	}
-	if h := templateHint(c, a.Atespace); h != "" && a.State == model.StateCrashed {
+	if h := templateHint(c, a.Atespace); h != "" && a.State == model.StateCrashed && len(parts) < 2 {
 		parts = append(parts, h)
 	}
 	return strings.Join(parts, " ")

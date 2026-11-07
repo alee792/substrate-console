@@ -154,7 +154,7 @@ func (e *Engine) Evaluate(ctx context.Context, c *model.Cluster, scope string, m
 		}
 		r := s.item
 		r.Severity = Resolved
-		r.Facts = []string{"resolved " + Ago(now, s.lastSeen)}
+		r.Facts = []string{"Resolved " + Ago(now, s.lastSeen)}
 		r.Actions = nil
 		all = append(all, r)
 	}
@@ -190,9 +190,9 @@ func (e *Engine) Evaluate(ctx context.Context, c *model.Cluster, scope string, m
 	case 0:
 		st.Headline = "All clear"
 	case 1:
-		st.Headline = "1 thing needs you"
+		st.Headline = "1 issue"
 	default:
-		st.Headline = fmt.Sprintf("%d things need you", open)
+		st.Headline = fmt.Sprintf("%d issues", open)
 	}
 
 	perAtespace := map[string]*AtespaceSummary{}
@@ -229,13 +229,13 @@ func (e *Engine) Evaluate(ctx context.Context, c *model.Cluster, scope string, m
 
 	if scope == "" {
 		st.Pools = c.Pools
-		st.Summary = fmt.Sprintf("%d actors across %d atespaces, on %d worker pools", total, len(c.Atespaces), len(c.Pools))
+		st.Summary = fmt.Sprintf("%s · %s · %s", plural(total, "actor"), plural(len(c.Atespaces), "atespace"), plural(len(c.Pools), "pool"))
 	} else {
-		st.Summary = fmt.Sprintf("%d actors in %s · %d running · %d suspended", total, scope, st.Counts["running"], st.Counts["suspended"])
+		st.Summary = fmt.Sprintf("%s · %d running", plural(total, "actor"), st.Counts["running"])
 	}
 	st.Vitals = e.vitals(ctx, c, scope, metrics, st.Counts, total)
 	if metrics == nil {
-		st.Notes = append(st.Notes, "No Prometheus configured: resume latency and history are unavailable. Pass --prometheus-url to enable them.")
+		st.Notes = append(st.Notes, "Resume latency and history need Prometheus. Start with --prometheus-url.")
 	}
 	return st
 }
@@ -307,26 +307,27 @@ func (e *Engine) crashes(c *model.Cluster, now time.Time) []Item {
 		where := ""
 		switch {
 		case as[0].Worker != "":
-			where = " on worker " + short(as[0].Worker, as[0].Pool)
+			where = " on " + short(as[0].Worker, as[0].Pool)
 		case as[0].Node != "":
 			where = " on node " + as[0].Node
 		}
 		if len(as) == 1 {
-			it.Title = fmt.Sprintf("%s crashed%s", as[0].Name, where)
+			it.Title = fmt.Sprintf("%s crashed", as[0].Name)
 		} else {
-			it.Title = fmt.Sprintf("%d actors crashed%s", len(as), where)
+			it.Title = fmt.Sprintf("%d crashes%s", len(as), where)
 		}
 		if len(reasons) == 1 {
 			for r := range reasons {
 				it.Facts = append(it.Facts, r)
 			}
 		}
-		if len(templates) == 1 && as[0].Pool != "" {
-			it.Facts = append(it.Facts, as[0].Pool+" · "+as[0].Template)
-		} else if len(templates) == 1 {
+		if len(templates) == 1 {
 			it.Facts = append(it.Facts, as[0].Template)
 		}
-		it.Facts = append(it.Facts, strings.Join(keys(spaces), ", "), "latest "+Ago(now, latest))
+		if len(as) == 1 && where != "" {
+			it.Facts = append(it.Facts, strings.TrimPrefix(where, " on "))
+		}
+		it.Facts = append(it.Facts, Ago(now, latest))
 		if len(as) == 1 {
 			it.Actions = []Action{
 				{Label: "Open", Tool: "get_actor", Args: map[string]any{"atespace": as[0].Atespace, "name": as[0].Name}},
@@ -334,8 +335,8 @@ func (e *Engine) crashes(c *model.Cluster, now time.Time) []Item {
 			}
 		} else {
 			it.Actions = []Action{
-				{Label: "Show actors", Tool: "list_actors", Args: map[string]any{"state": "crashed", "worker": as[0].Worker, "atespace": onlyOne(spaces)}},
-				{Label: fmt.Sprintf("Revert %d", len(as)), Tool: "revert_actors", Args: refsArgs(it.Actors), Primary: true, Destructive: true},
+				{Label: "Show", Tool: "list_actors", Args: map[string]any{"state": "crashed", "worker": as[0].Worker, "atespace": onlyOne(spaces)}},
+				{Label: fmt.Sprintf("Revert all %d", len(as)), Tool: "revert_actors", Args: refsArgs(it.Actors), Primary: true, Destructive: true},
 			}
 		}
 		out = append(out, it)
@@ -389,16 +390,17 @@ func (e *Engine) stuck(c *model.Cluster, now time.Time) []Item {
 		since := *a.StateSince
 		it := Item{
 			ID: "stuck:" + a.Atespace + "/" + a.Name, Severity: Warning, Rule: "stuck",
-			Title:  fmt.Sprintf("%s has been %s for %s", a.Name, a.State, Duration(now.Sub(since))),
+			Title:  fmt.Sprintf("%s stuck %s", a.Name, a.State),
 			Actors: []model.ActorRef{a.Ref()}, Since: &since, atespaces: set(a.Atespace),
 		}
+		it.Facts = append(it.Facts, "for "+Duration(now.Sub(since)))
 		if a.State == model.StateResuming {
-			it.Facts = append(it.Facts, "usual: under 1s")
+			it.Facts = append(it.Facts, "normally under 1 s")
 		}
-		it.Facts = append(it.Facts, a.Template, a.Atespace)
+		it.Facts = append(it.Facts, a.Template)
 		it.Actions = []Action{
-			{Label: "Delete", Tool: "delete_actors", Args: refsArgs(it.Actors), Destructive: true},
-			{Label: "Revert", Tool: "revert_actors", Args: refsArgs(it.Actors), Destructive: true},
+			{Label: "Open", Tool: "get_actor", Args: map[string]any{"atespace": a.Atespace, "name": a.Name}},
+			{Label: "Revert", Tool: "revert_actors", Args: refsArgs(it.Actors), Primary: true, Destructive: true},
 		}
 		out = append(out, it)
 	}
@@ -414,8 +416,8 @@ func (e *Engine) workers(c *model.Cluster) []Item {
 		}
 		it := Item{
 			ID: "worker:" + w.Pool + "/" + w.Name, Severity: Critical, Rule: "B.2",
-			Title:     fmt.Sprintf("Worker %s is unavailable with %d actors on it", w.Name, w.Actors),
-			Facts:     []string{w.Pool, w.Node},
+			Title:     fmt.Sprintf("%s unreachable", w.Name),
+			Facts:     []string{plural(w.Actors, "actor") + " on it", w.Pool},
 			atespaces: map[string]bool{},
 			Actions:   []Action{{Label: "Drain", Tool: "drain_worker", Args: map[string]any{"worker": w.Pool + "/" + w.Name}, Primary: true, Destructive: true}},
 		}
@@ -439,13 +441,14 @@ func (e *Engine) pools(c *model.Cluster, now time.Time) []Item {
 		}
 		it := Item{
 			ID: "pool:" + p.Namespace + "/" + p.Name, Severity: Warning, Rule: "B.1",
-			Title:     fmt.Sprintf("%s wants %d workers, %d are ready", p.Name, p.Desired, p.Ready),
+			Title:     fmt.Sprintf("%s short %s", p.Name, plural(p.Desired-p.Ready, "worker")),
+			Facts:     []string{fmt.Sprintf("%d of %d ready", p.Ready, p.Desired)},
 			atespaces: map[string]bool{},
-			Actions:   []Action{{Label: "Open pools", Tool: "list_worker_pools", Args: map[string]any{}}},
+			Actions:   []Action{{Label: "Pools", Tool: "list_worker_pools", Args: map[string]any{}}},
 		}
 		if p.NotReadySince != nil {
 			it.Since = p.NotReadySince
-			it.Facts = append(it.Facts, "for "+Duration(now.Sub(*p.NotReadySince)))
+			it.Facts = append(it.Facts, "since "+Ago(now, *p.NotReadySince))
 		}
 		out = append(out, it)
 	}
@@ -468,14 +471,14 @@ func (e *Engine) capacity(ctx context.Context, c *model.Cluster, metrics backend
 		}
 		it := Item{
 			ID: "capacity:" + p.Namespace + "/" + p.Name, Severity: Warning, Rule: "A.1",
-			Title:     fmt.Sprintf("%s is nearly full", p.Name),
-			Facts:     []string{fmt.Sprintf("%d of %d workers busy", p.Busy, p.Ready), "new resumes may wait or fail"},
+			Title:     fmt.Sprintf("%s nearly full", p.Name),
+			Facts:     []string{fmt.Sprintf("%d of %d workers busy", p.Busy, p.Ready)},
 			atespaces: map[string]bool{},
-			Actions:   []Action{{Label: "Open pools", Tool: "list_worker_pools", Args: map[string]any{}}},
+			Actions:   []Action{{Label: "Pools", Tool: "list_worker_pools", Args: map[string]any{}}},
 		}
 		if failRate > 1 {
-			it.Title = fmt.Sprintf("%.1f%% of resumes failed for lack of capacity", failRate)
-			it.Facts = []string{"last 15 min", fmt.Sprintf("%s %d of %d busy", p.Name, p.Busy, p.Ready)}
+			it.Title = fmt.Sprintf("%s full, resumes failing", p.Name)
+			it.Facts = []string{fmt.Sprintf("%.1f%% failed in 15 min", failRate), fmt.Sprintf("%d of %d busy", p.Busy, p.Ready)}
 		}
 		for _, a := range c.Actors {
 			if a.Pool == p.Name {
@@ -505,7 +508,7 @@ func (e *Engine) vitals(ctx context.Context, c *model.Cluster, scope string, met
 		busy += p.Busy
 		ready += p.Ready
 	}
-	capV := Vital{Key: "capacity", Label: "Capacity", Value: "–", Unit: "% busy",
+	capV := Vital{Key: "capacity", Label: "Capacity", Value: "–", Unit: "%",
 		Drill: &Action{Label: "Open pools", Tool: "list_worker_pools", Args: map[string]any{}}}
 	if ready > 0 {
 		pct := 100 * float64(busy) / float64(ready)
@@ -516,12 +519,12 @@ func (e *Engine) vitals(ctx context.Context, c *model.Cluster, scope string, met
 		for _, p := range c.Pools {
 			if p.Ready > 0 && float64(p.Busy)/float64(p.Ready) >= capacityWarn {
 				capV.Tone = "warn"
-				capV.Note = fmt.Sprintf("%s %d of %d", p.Name, p.Busy, p.Ready)
+				capV.Note = fmt.Sprintf("%s at %d of %d", p.Name, p.Busy, p.Ready)
 			}
 		}
 	}
 	if scope != "" {
-		capV.Note += " · shared"
+		capV.Note += ", shared"
 	}
 	capV.Series, capV.Baseline = series(backend.MetricCapacity, 0), series(backend.MetricCapacity, week)
 	capV.Delta = delta(capV.Series, capV.Baseline, " pts")
@@ -536,11 +539,11 @@ func (e *Engine) vitals(ctx context.Context, c *model.Cluster, scope string, met
 		res.Note = "needs Prometheus"
 	}
 
-	dens := Vital{Key: "density", Label: "Density", Value: "–", Unit: "% asleep",
+	dens := Vital{Key: "density", Label: "Suspended", Value: "–", Unit: "%",
 		Drill: &Action{Label: "Suspended actors", Tool: "list_actors", Args: map[string]any{"state": "suspended", "atespace": scope}}}
 	if total > 0 {
 		dens.Value = fmt.Sprintf("%.0f", 100*float64(counts["suspended"])/float64(total))
-		dens.Note = fmt.Sprintf("%d suspended · %d running", counts["suspended"], counts["running"])
+		dens.Note = fmt.Sprintf("%d running", counts["running"])
 	}
 	if s := series(backend.MetricRunning, 0); s != nil && total > 0 {
 		for _, p := range s {
@@ -548,7 +551,7 @@ func (e *Engine) vitals(ctx context.Context, c *model.Cluster, scope string, met
 		}
 	}
 
-	cr := Vital{Key: "crashes", Label: "Crashed", Value: fmt.Sprintf("%d", counts["crashed"]), Unit: "now",
+	cr := Vital{Key: "crashes", Label: "Crashed", Value: fmt.Sprintf("%d", counts["crashed"]),
 		Drill: &Action{Label: "Crashed actors", Tool: "list_actors", Args: map[string]any{"state": "crashed", "atespace": scope}}}
 	if counts["crashed"] > 0 {
 		cr.Tone = "crit"
@@ -562,7 +565,7 @@ func (e *Engine) vitals(ctx context.Context, c *model.Cluster, scope string, met
 	}
 	if len(workers) == 1 && counts["crashed"] > 1 {
 		for w := range workers {
-			cr.Note = "all on " + w
+			cr.Note = "All on " + w
 		}
 	}
 	return []Vital{capV, res, dens, cr}
@@ -574,9 +577,9 @@ func delta(cur, base []model.Point, unit string) string {
 	}
 	d := cur[len(cur)-1].V - base[len(base)-1].V
 	if math.Abs(d) < 0.5 {
-		return "same as last week"
+		return "flat"
 	}
-	return fmt.Sprintf("%+.0f%s vs last week", d, unit)
+	return fmt.Sprintf("%+.0f%s", d, unit)
 }
 
 // Ago renders a past time relative to now, e.g. "6m ago".
@@ -599,15 +602,18 @@ func Ago(now, t time.Time) string {
 func Duration(d time.Duration) string {
 	switch {
 	case d < time.Minute:
-		return fmt.Sprintf("%ds", int(d.Seconds()))
+		return fmt.Sprintf("%d s", int(d.Seconds()))
 	case d < time.Hour:
-		m := int(d.Minutes())
-		if m == 1 {
-			return "1 minute"
-		}
-		return fmt.Sprintf("%d minutes", m)
+		return fmt.Sprintf("%d min", int(d.Minutes()))
 	case d < 48*time.Hour:
-		return fmt.Sprintf("%dh", int(d.Hours()))
+		return fmt.Sprintf("%d h", int(d.Hours()))
 	}
-	return fmt.Sprintf("%dd", int(d.Hours()/24))
+	return fmt.Sprintf("%d d", int(d.Hours()/24))
+}
+
+func plural(n int, one string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return fmt.Sprintf("%d %ss", n, one)
 }

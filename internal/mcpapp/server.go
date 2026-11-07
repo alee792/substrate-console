@@ -22,7 +22,12 @@ import (
 const (
 	ExtensionID = "io.modelcontextprotocol/ui"
 	ViewMIME    = "text/html;profile=mcp-app"
-	ViewURI     = "ui://substrate-console/console.html"
+	// ViewURI is the full console. ChatGPT opens it fullscreen; it backs
+	// the sidebar and thread entrypoints.
+	ViewURI = "ui://substrate-console/console.html"
+	// CardURI is the same bundle declared as preferring inline, for tool
+	// calls the model makes in a conversation (an actor, a chart, a dry run).
+	CardURI = "ui://substrate-console/card.html"
 )
 
 // Options configures the server.
@@ -70,9 +75,11 @@ Write tools (suspend, resume, revert, delete, drain) accept dry_run; call them w
 
 // MCP builds an *mcp.Server with every tool and the view resource.
 func (s *Server) MCP() *mcp.Server {
-	srv := mcp.NewServer(&mcp.Implementation{Name: "substrate-console", Title: "Substrate Console", Version: s.opts.Version},
-		&mcp.ServerOptions{Instructions: instructions})
+	srv := mcp.NewServer(&mcp.Implementation{Name: "substrate-console", Title: "Substrate", Version: s.opts.Version, Icons: icons},
+		&mcp.ServerOptions{Instructions: instructions, Capabilities: capabilities()})
 	s.addView(srv)
+	s.addEntrypoints(srv)
+	s.addMentions(srv)
 	s.addReadTools(srv)
 	if !s.opts.ReadOnly {
 		s.addWriteTools(srv)
@@ -102,9 +109,15 @@ func (s *Server) invalidate() {
 
 // viewMeta is the resource _meta: the MCP Apps fields under "ui", and the
 // OpenAI Apps SDK aliases that ChatGPT still reads.
-func (s *Server) viewMeta() mcp.Meta {
+func (s *Server) viewMeta(preferred string) mcp.Meta {
 	domains := append([]string{}, s.opts.FontDomains...)
 	return mcp.Meta{
+		// OpenAI MCP Extensions: lets ChatGPT pick a display mode before
+		// the view has initialized.
+		"openai/ui": map[string]any{
+			"availableDisplayModes": []string{"inline", "fullscreen"},
+			"preferredDisplayMode":  preferred,
+		},
 		"ui": map[string]any{
 			"csp": map[string]any{
 				"connectDomains":  []string{},
@@ -122,26 +135,34 @@ func (s *Server) viewMeta() mcp.Meta {
 }
 
 func (s *Server) addView(srv *mcp.Server) {
-	meta := s.viewMeta()
-	srv.AddResource(&mcp.Resource{
-		URI: ViewURI, Name: "console", Title: "Substrate Console",
-		Description: "Interactive view for substrate-console tool results.",
-		MIMEType:    ViewMIME, Meta: meta,
-	}, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
-		return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{
-			URI: ViewURI, MIMEType: ViewMIME, Text: string(s.opts.ViewHTML), Meta: meta,
-		}}}, nil
-	})
+	for _, v := range []struct{ uri, name, title, mode string }{
+		{ViewURI, "console", "Substrate", "fullscreen"},
+		{CardURI, "card", "Substrate card", "inline"},
+	} {
+		meta := s.viewMeta(v.mode)
+		uri := v.uri
+		srv.AddResource(&mcp.Resource{
+			URI: uri, Name: v.name, Title: v.title,
+			Description: "Interactive view for substrate-console tool results.",
+			MIMEType:    ViewMIME, Meta: meta, Icons: icons,
+		}, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+			return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{
+				URI: uri, MIMEType: ViewMIME, Text: string(s.opts.ViewHTML), Meta: meta,
+			}}}, nil
+		})
+	}
 }
 
 // toolMeta links a tool to the view. "ui" is the MCP Apps field;
 // "ui/resourceUri" is the spec's deprecated flat key, kept for hosts built
 // before it moved; the openai/* keys are the Apps SDK aliases.
-func toolMeta(invoking, invoked string) mcp.Meta {
+func toolMeta(invoking, invoked string) mcp.Meta { return viewToolMeta(CardURI, invoking, invoked) }
+
+func viewToolMeta(uri, invoking, invoked string) mcp.Meta {
 	return mcp.Meta{
-		"ui":                             map[string]any{"resourceUri": ViewURI, "visibility": []string{"model", "app"}},
-		"ui/resourceUri":                 ViewURI,
-		"openai/outputTemplate":          ViewURI,
+		"ui":                             map[string]any{"resourceUri": uri, "visibility": []string{"model", "app"}},
+		"ui/resourceUri":                 uri,
+		"openai/outputTemplate":          uri,
 		"openai/widgetAccessible":        true,
 		"openai/toolInvocation/invoking": invoking,
 		"openai/toolInvocation/invoked":  invoked,

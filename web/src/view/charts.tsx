@@ -47,7 +47,7 @@ export function LineChart({ series, unit }: { series: Series[]; unit: string }) 
   }, []);
   const shown = series.filter((s) => s.points.length > 1);
   if (!shown.length) return <p class="note">No data in this window.</p>;
-  const H = Math.round(Math.min(260, Math.max(170, W * 0.32))), L = 52, R = 12, T = 12, B = 24;
+  const H = Math.round(Math.min(300, Math.max(180, W * 0.34))), L = 44, R = 8, T = 10, B = 26;
   const max = niceMax(Math.max(...shown.flatMap((s) => s.points.map((p) => p.v))) * 1.05);
   const t0 = Date.parse(shown[0].points[0].t);
   const t1 = Date.parse(shown[0].points[shown[0].points.length - 1].t);
@@ -95,7 +95,7 @@ export function LineChart({ series, unit }: { series: Series[]; unit: string }) 
         {styled.map(({ s, st }) => (
           <span key={s.label} style={{ color: st.stroke }}>
             <i style={{ borderTopStyle: st.dash ? "dashed" : "solid" }} />
-            <span style={{ color: "var(--muted)" }}>{s.label} · {Math.round(s.points[s.points.length - 1].v)}{unitLabel}</span>
+            <span style={{ color: "var(--muted)" }}>{s.label}<b>{Math.round(s.points[s.points.length - 1].v)}{unitLabel}</b></span>
           </span>
         ))}
       </div>
