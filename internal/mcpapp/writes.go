@@ -112,7 +112,7 @@ func (s *Server) addWriteTools(srv *mcp.Server) {
 	}
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "drain_worker",
-		Description: "Drain a worker: stop placing actors on it and suspend the ones running there. Use dry_run first.",
+		Description: "Drain a worker: stop placing new actors on it. Actors already there keep running until they suspend or move. Use dry_run first.",
 		Annotations: write("Drain worker", true, true),
 		Meta:        toolMeta("Draining worker…", "Drained worker"),
 	}, s.drain)
@@ -187,9 +187,12 @@ func (s *Server) drain(ctx context.Context, _ *mcp.CallToolRequest, in DrainIn) 
 		s.invalidate()
 	}
 	if in.DryRun {
-		res.Summary = fmt.Sprintf("Drain %s? Its %d running actors will be suspended.", in.Worker, len(res.Targets))
+		res.Summary = fmt.Sprintf("Drain %s? Nothing new will be placed on it.", in.Worker)
+		if n := len(res.Targets); n > 0 {
+			res.Note = fmt.Sprintf("The %d %s on it keep running.", n, map[bool]string{true: "actor", false: "actors"}[n == 1])
+		}
 	} else {
-		res.Summary = fmt.Sprintf("Drained %s. Suspended %d actors.", in.Worker, len(res.Targets))
+		res.Summary = fmt.Sprintf("Drained %s. Nothing new will be placed on it.", in.Worker)
 	}
 	return &mcp.CallToolResult{Content: text(actionText(res))}, res, nil
 }

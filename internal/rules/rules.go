@@ -561,7 +561,12 @@ func (e *Engine) vitals(ctx context.Context, c *model.Cluster, scope string, met
 	workers := map[string]bool{}
 	for _, a := range c.Actors {
 		if a.State == model.StateCrashed && (scope == "" || a.Atespace == scope) {
-			workers[short(a.Worker, a.Pool)] = true
+			// ateapi clears the worker on a crash; the node stays.
+			if a.Worker != "" {
+				workers[short(a.Worker, a.Pool)] = true
+			} else if a.Node != "" {
+				workers["node "+a.Node] = true
+			}
 		}
 	}
 	if len(workers) == 1 && counts["crashed"] > 1 {

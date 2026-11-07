@@ -8,7 +8,16 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      # substrate-fake is fetched straight from GitHub. While it is private,
+      # a FAKE_REPO_TOKEN secret (read access to it) lets git through.
+      GOPRIVATE: github.com/alee792/substrate-fake
     steps:
+      - name: GitHub access for private modules
+        env:
+          TOKEN: ${{ secrets.FAKE_REPO_TOKEN }}
+        if: env.TOKEN != ''
+        run: git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:

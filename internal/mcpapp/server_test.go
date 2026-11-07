@@ -5,22 +5,33 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/alee792/substrate-console/internal/backend/demo"
+	substratefake "github.com/alee792/substrate-fake"
+
+	"github.com/alee792/substrate-console/internal/backend/ate"
 	"github.com/alee792/substrate-console/internal/mcpapp"
+	"github.com/alee792/substrate-console/internal/metrics"
 )
 
-var now = time.Date(2026, 11, 7, 16, 8, 41, 0, time.UTC)
-
+// connect serves the console against the fake demo cluster, through the
+// live backend: ateapi over TLS, the Kubernetes API and Prometheus.
 func connect(t *testing.T, readOnly bool) *mcp.ClientSession {
 	t.Helper()
-	d := demo.New(func() time.Time { return now })
-	s := mcpapp.New(mcpapp.Options{Backend: d, Metrics: d, ViewHTML: []byte("<!doctype html><title>v</title>"), ReadOnly: readOnly, CacheFor: -1})
-	ct, st := mcp.NewInMemoryTransports()
 	ctx := context.Background()
+	fc, err := substratefake.Start(ctx, substratefake.Options{Scenario: substratefake.Demo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(fc.Close)
+	live, err := ate.New(ctx, ate.Config{Kubeconfig: fc.Kubeconfig, Context: fc.Context, Endpoint: fc.APIEndpoint})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(live.Close)
+	s := mcpapp.New(mcpapp.Options{Backend: live, Metrics: metrics.NewPrometheus(fc.PrometheusURL), ViewHTML: []byte("<!doctype html><title>v</title>"), ReadOnly: readOnly, CacheFor: -1})
+	ct, st := mcp.NewInMemoryTransports()
 	if _, err := s.MCP().Connect(ctx, st, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +200,7 @@ func TestStatusFindsTheDemoProblems(t *testing.T) {
 		titles = append(titles, it.(map[string]any)["title"].(string))
 	}
 	joined := strings.Join(titles, "|")
-	for _, want := range []string{"3 crashes on w-03", "ioc-enrich-02 stuck resuming", "gvisor-pool-a full, resumes failing"} {
+	for _, want := range []string{"3 crashes on node kind-worker3", "mcp-enrich-v4 golden snapshot failed", "ioc-enrich-02 stuck resuming", "gvisor-pool-a full, resumes failing"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("status items %q lack %q", joined, want)
 		}
@@ -210,7 +221,9 @@ func TestGetActorExplainsTheCrash(t *testing.T) {
 	cs := connect(t, false)
 	d, txt := call(t, cs, "get_actor", map[string]any{"atespace": "triage", "name": "triage-0d55"})
 	hint, _ := d["hint"].(string)
-	if !strings.Contains(hint, "heap is set to 4 GiB; the sandbox allows 2 GiB") {
+	// A crashed actor has no logs to read, so the hint comes from the crash
+	// message and the template's newer version.
+	if !strings.Contains(hint, "Hit the 2 GiB memory limit.") || !strings.Contains(hint, "agent-devbox-v12 allows 4 GiB") {
 		t.Errorf("hint = %q", hint)
 	}
 	if !strings.Contains(txt, "is crashed") {

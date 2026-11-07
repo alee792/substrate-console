@@ -131,7 +131,7 @@ func convertActor(a *ateapi.Actor, now time.Time) model.Actor {
 			out.Node = wa.GetNodeName()
 		}
 		if rt := wa.GetSandboxRuntime(); rt != nil {
-			out.SandboxClass = sandboxClass(rt.String())
+			out.SandboxClass = rt.GetSandboxClass()
 		}
 	}
 	if c := st.GetCrash(); c != nil {
@@ -160,18 +160,6 @@ func convertActor(a *ateapi.Actor, now time.Time) model.Actor {
 		out.LastActive = out.StateSince
 	}
 	return out
-}
-
-// sandboxClass pulls a class name out of the runtime message's text form,
-// which is enough for display.
-func sandboxClass(s string) string {
-	s = strings.ToLower(s)
-	for _, c := range []string{"gvisor", "microvm"} {
-		if strings.Contains(s, c) {
-			return c
-		}
-	}
-	return ""
 }
 
 // Snapshot implements backend.Backend.

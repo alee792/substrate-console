@@ -25,10 +25,10 @@ Every view can be scoped to the whole cluster or a single atespace.
 
 ```sh
 make build                              # builds the view, then the Go binary
-bin/substrate-console serve --demo      # http://127.0.0.1:7878, fixture cluster
+bin/substrate-console serve --demo      # http://127.0.0.1:7878, fake cluster
 ```
 
-`--demo` serves a fixture cluster with a few real problems in it (three OOM crashes on one worker, an actor stuck resuming, a nearly full pool), so you can try everything without a Substrate install. Writes change the fixture's state in memory.
+`--demo` starts a fake cluster from [substrate-fake](https://github.com/alee792/substrate-fake) on loopback and connects to it exactly as it would to a real one: ateapi over TLS, the Kubernetes API for WorkerPools, trust bundles and tokens, and Prometheus with the real PromQL engine. The demo has a few real problems in it (three OOM crashes on one node, an actor stuck resuming, a nearly full pool, a failed golden snapshot), so you can try everything without a Substrate install. Writes change the fake's state in memory.
 
 Against a real cluster, the console uses your kubeconfig the same way `kubectl ate` does: it port-forwards to `ate-system/api`, trusts the cluster's ClusterTrustBundle, and mints a token for the `ate-client` ServiceAccount.
 
@@ -38,7 +38,7 @@ bin/substrate-console serve --context kind-dev --prometheus-url http://localhost
 
 | Flag | Meaning |
 |---|---|
-| `--demo` | Use the fixture cluster. |
+| `--demo` | Start and use a fake cluster (substrate-fake). |
 | `--read-only` | Register only the read tools. |
 | `--kubeconfig`, `--context` | Which cluster. |
 | `--endpoint` | Dial ateapi directly instead of port-forwarding. |
@@ -121,7 +121,7 @@ The local web page (`serve`, then open `/`) is itself a minimal MCP Apps host bu
 cmd/substrate-console   CLI: mcp (stdio), serve (HTTP + web page), version
 internal/mcpapp         MCP server, tools, MCP Apps / OpenAI metadata
 internal/rules          turns a cluster snapshot into "what needs you"
-internal/backend        Backend interface; ate (live) and demo (fixture)
+internal/backend        Backend interface; ate talks to a cluster (real or substrate-fake)
 internal/metrics        Prometheus querier
 internal/shell          HTTP handler for /mcp and the web page
 web/                    Preact view and shell; dist/ is committed and embedded
@@ -131,7 +131,7 @@ Requires Go 1.27 and Node 22. `make test` runs Go vet and tests plus the TypeScr
 
 ## Known gaps
 
-The live backend is written against Substrate v1.0.0's API but has not yet been run against a cluster. Things to verify on a real one:
+The live backend is written against Substrate v1.0.0's API. It runs against substrate-fake in `--demo` and in the tests, but not yet against a real cluster, and the fake encodes the same reading of the API docs. Things to verify on a real one:
 
 - Connection: port-forward, ClusterTrustBundle lookup and token minting, copied from `kubectl-ate`.
 - `StateSince` comes from the actor's update or crash time; stuck-transition thresholds depend on that being accurate.

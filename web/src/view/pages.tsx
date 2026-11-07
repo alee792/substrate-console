@@ -257,7 +257,7 @@ export function ActorPage({ d, nav }: { d: ActorDetail; nav: Nav }) {
         </div>
         <aside class="props">
           {d.template?.memoryLimitBytes ? <Prop k="Memory" v={`${a.memoryBytes ? bytes(a.memoryBytes) + " of " : ""}${bytes(d.template.memoryLimitBytes)}${a.memoryBytes ? "" : " limit"}`} /> : null}
-          <Prop k={a.state === "running" ? "Worker" : "Last worker"} v={a.worker ?? "–"} mono />
+          <Prop k={a.state === "running" ? "Worker" : "Last worker"} v={shortWorker(a.worker, a.pool)} mono />
           {a.sandboxClass && <Prop k="Sandbox" v={a.sandboxClass} />}
           <div class="hr" />
           <Prop k="Latest snapshot" v={snap ? `Generation ${snap.generation}` : "None"} />

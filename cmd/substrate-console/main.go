@@ -20,11 +20,11 @@ import (
 	"syscall"
 	"time"
 
+	substratefake "github.com/alee792/substrate-fake"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/alee792/substrate-console/internal/backend"
 	"github.com/alee792/substrate-console/internal/backend/ate"
-	"github.com/alee792/substrate-console/internal/backend/demo"
 	"github.com/alee792/substrate-console/internal/mcpapp"
 	"github.com/alee792/substrate-console/internal/metrics"
 	"github.com/alee792/substrate-console/internal/shell"
@@ -104,10 +104,18 @@ func run(ctx context.Context, cmd string, f flags, log *slog.Logger) error {
 		m backend.Metrics
 	)
 	if f.demo {
-		d := demo.New(nil)
-		b, m = d, d
-		log.Info("serving the demo cluster")
-	} else {
+		// The demo is a fake cluster served on loopback. The console talks
+		// to it exactly as it would to a real one.
+		c, err := substratefake.Start(ctx, substratefake.Options{Scenario: substratefake.Demo})
+		if err != nil {
+			return fmt.Errorf("start the demo cluster: %w", err)
+		}
+		defer c.Close()
+		f.kubeconfig, f.kubeContext, f.endpoint, f.tokenFile = c.Kubeconfig, c.Context, c.APIEndpoint, ""
+		f.prometheusURL = c.PrometheusURL
+		log.Info("serving the demo cluster", "kubeconfig", c.Kubeconfig, "ateapi", c.APIEndpoint, "prometheus", c.PrometheusURL)
+	}
+	{
 		live, err := ate.New(ctx, ate.Config{
 			Kubeconfig: f.kubeconfig, Context: f.kubeContext, Endpoint: f.endpoint, TokenFile: f.tokenFile,
 		})
