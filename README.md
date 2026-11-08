@@ -19,7 +19,7 @@ The console is built around progressive disclosure:
 4. **Actors.** State, crash reason, a plain hint (for example "Node heap is set to 4 GiB; the sandbox allows 2 GiB"), timeline, logs and snapshots.
 5. **Ask.** Instead of general dashboards, the assistant answers the question and draws the chart with `query_metric`.
 
-Every view can be scoped to the whole cluster or a single atespace.
+Every view can be scoped to the whole cluster or a single atespace. The scope only narrows what you see. It is not an access boundary: the console acts with whatever identity your kubeconfig gives it.
 
 ## Quick start
 
@@ -131,14 +131,13 @@ Requires Go 1.27 and Node 22. `make test` runs Go vet and tests plus the TypeScr
 
 ## Known gaps
 
-The live backend is written against Substrate v1.0.0's API. It runs against substrate-fake in `--demo` and in the tests, but not yet against a real cluster, and the fake encodes the same reading of the API docs. Things to verify on a real one:
+The live backend is written against Substrate v1.0.0's API and has been checked on a kind cluster running it: connection (ClusterTrustBundle lookup and token minting), WorkerPools, the template version flow, revert, crash grouping by node and the Prometheus name probe all work. Still to check on a real cluster:
 
-- Connection: port-forward, ClusterTrustBundle lookup and token minting, copied from `kubectl-ate`.
 - `StateSince` comes from the actor's update or crash time; stuck-transition thresholds depend on that being accurate.
-- After a crash, ateapi clears the worker assignment, so crash grouping falls back to the assigned node.
-- WorkerPool `spec.replicas` and `status.readyReplicas` for the "below desired size" rule.
-- Templates: `CreateActorTemplate` with a new version copied whole from its source (`GetActorTemplate`) and its first container, resources, selector and snapshot settings replaced; pinning a pool uses that pool's labels as the worker selector; `CreateActor` with only a template reference starts from the golden snapshot.
-- Prometheus metric names (dotted UTF-8 or underscored; the querier probes for both). kind's bundled Prometheus doesn't scrape worker-pool metrics, so capacity and running-actor history are unavailable there.
+- `drain_worker` end to end.
+- kind's bundled Prometheus doesn't scrape worker-pool metrics, so capacity and running-actor history are unavailable there.
+
+Access control is the main open design question. Today anyone with the console token gets the full power of the kubeconfig it runs with, and the atespace scope is a view filter. The plan is to base access on the user's own Kubernetes RBAC rather than add a separate permission model in the console.
 
 Also not done yet: a full actor timeline (needs state-change events from Substrate), logs for actors that aren't running, and OAuth on `/mcp` (it takes a static token today). The view bundle is about 400 KiB (110 KiB gzipped). Most of that is the MCP SDK and zod. The build drops zod's non-English error locales.
 
