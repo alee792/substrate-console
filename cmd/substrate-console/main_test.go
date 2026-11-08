@@ -28,3 +28,25 @@ func TestPublicURLNeedsAnIdentity(t *testing.T) {
 		}
 	}
 }
+
+func TestPublicURLKeepsCanopyReadOnly(t *testing.T) {
+	const pub, canopy = "https://console.example.com", "http://localhost:8000"
+	for _, c := range []struct {
+		name string
+		f    flags
+		ok   bool
+	}{
+		{"writes refused", flags{publicURL: pub, sa: "ate-users/alice", canopyURL: canopy}, false},
+		{"demo writes refused", flags{publicURL: pub, demo: true, canopyURL: canopy}, false},
+		{"read only", flags{publicURL: pub, sa: "ate-users/alice", canopyURL: canopy, readOnly: true}, true},
+		{"loopback", flags{canopyURL: canopy}, true},
+	} {
+		err := checkIdentity("serve", c.f)
+		if c.ok && err != nil {
+			t.Errorf("%s: %v", c.name, err)
+		}
+		if !c.ok && (err == nil || !strings.Contains(err.Error(), "--read-only")) {
+			t.Errorf("%s: err = %v, want one naming --read-only", c.name, err)
+		}
+	}
+}

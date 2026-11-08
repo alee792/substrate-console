@@ -20,7 +20,7 @@ import (
 )
 
 const agentInstructions = `Agents run on Canopy, on this cluster. An agent is an Anthropic or OpenAI agent: list_agents and get_agent show each one, its versions (a push from git or an edit through the API) and its definition as that API returns it. The console doesn't edit definitions: they change in git (agent.anthropic.yaml or agent.openai.yaml, then canopy push) or through the lab API.
-To try an agent, call start_session with dry_run=true and a message; the user reviews the playground (version, environment, repository) and starts it. get_session shows the transcript and what the session waits on. send_message, answer_approval, interrupt_session, suspend_session and resume_session act at once; end_session takes dry_run.`
+To try an agent, call start_session with dry_run=true and a message; the user reviews the playground (version, environment, repository) and starts it. get_session shows the transcript and what the session waits on. send_message, interrupt_session, suspend_session and resume_session act at once; end_session takes dry_run. Approvals are the user's alone: they answer them on the session card, and you can't. Tell the user what a session waits on and leave the decision to them.`
 
 // AgentList is list_agents' result.
 type AgentList struct {
@@ -138,9 +138,11 @@ func (s *Server) addAgentTools(srv *mcp.Server) {
 	}, s.sendMessage)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "answer_approval",
-		Description: "Allow or deny a tool call a session is waiting on. Only after the user decides.",
+		Description: "Allow or deny a tool call a session is waiting on. The session card's buttons call it; the model never does.",
 		Annotations: write("Answer approval", false, false),
-		Meta:        toolMeta("Answering…", "Answered"),
+		// App-only, so a model steered by what an agent read (get_session
+		// shows it the transcript) can't approve that agent's own tool calls.
+		Meta: appOnlyMeta(),
 	}, s.answerApproval)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "interrupt_session",
@@ -166,6 +168,15 @@ func (s *Server) addAgentTools(srv *mcp.Server) {
 		Annotations: write("End session", true, true),
 		Meta:        toolMeta("Ending session…", "Ended session"),
 	}, s.endSession)
+}
+
+// appOnlyMeta hides a tool from the model; only the view can call it.
+func appOnlyMeta() mcp.Meta {
+	return mcp.Meta{
+		"ui":                      map[string]any{"visibility": []string{"app"}},
+		"openai/visibility":       "private",
+		"openai/widgetAccessible": true,
+	}
 }
 
 func (s *Server) listAgents(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
@@ -336,7 +347,7 @@ func sessionText(p SessionPage) string {
 		if what == "" {
 			what = a.Tool + " " + a.Input
 		}
-		fmt.Fprintf(&b, "\nWaiting for approval (event %s): %s", a.EventID, oneLine(what, 300))
+		fmt.Fprintf(&b, "\nWaiting for the user to approve, on the session card: %s", oneLine(what, 300))
 	}
 	if p.Blocked != "" {
 		b.WriteString("\n" + p.Blocked)

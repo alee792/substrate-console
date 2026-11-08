@@ -3,6 +3,7 @@ package mcpapp_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -115,7 +116,9 @@ func TestAgentsAgainstCanopy(t *testing.T) {
 	call(t, cs, "send_message", map[string]any{"session": id, "text": "run: timeout 60 tail -f /dev/null"})
 	waiting = waitFor(t, cs, id, func(p map[string]any) bool { return len(p["approvals"].([]any)) > 0 })
 	call(t, cs, "answer_approval", map[string]any{"session": id, "event": waiting["approvals"].([]any)[0].(map[string]any)["eventId"], "decision": "allow"})
-	running := waitFor(t, cs, id, func(p map[string]any) bool { return p["session"].(map[string]any)["status"] == "in_progress" && len(p["approvals"].([]any)) == 0 })
+	running := waitFor(t, cs, id, func(p map[string]any) bool {
+		return p["session"].(map[string]any)["status"] == "in_progress" && len(p["approvals"].([]any)) == 0
+	})
 	if !hasAction(running, "interrupt_session") {
 		t.Errorf("no Stop while working: %s", jsonString(running["actions"]))
 	}
@@ -128,7 +131,9 @@ func TestAgentsAgainstCanopy(t *testing.T) {
 		t.Errorf("no Suspend when idle: %s", jsonString(stopped["actions"]))
 	}
 	call(t, cs, "suspend_session", map[string]any{"session": id})
-	waitFor(t, cs, id, func(p map[string]any) bool { return p["session"].(map[string]any)["sandbox"].(map[string]any)["status"] == "suspended" })
+	waitFor(t, cs, id, func(p map[string]any) bool {
+		return p["session"].(map[string]any)["sandbox"].(map[string]any)["status"] == "suspended"
+	})
 }
 
 func hasAction(p map[string]any, tool string) bool {
@@ -244,6 +249,24 @@ func TestAgentToolsNeedCanopy(t *testing.T) {
 		}
 		if read := strings.HasPrefix(n, "list_") || strings.HasPrefix(n, "get_"); reads[n] != read {
 			t.Errorf("read-only: %s registered = %v", n, reads[n])
+		}
+	}
+	// Only the user answers approvals: the card can call answer_approval,
+	// the model can't see it.
+	tl, err := full.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range tl.Tools {
+		ui, _ := tool.Meta["ui"].(map[string]any)
+		vis := fmt.Sprint(ui["visibility"])
+		switch {
+		case tool.Name == "answer_approval":
+			if vis != "[app]" || tool.Meta["openai/visibility"] != "private" {
+				t.Errorf("answer_approval is visible to the model: %v", tool.Meta)
+			}
+		case tool.Name == "send_message" && !strings.Contains(vis, "model"):
+			t.Errorf("send_message visibility %s", vis)
 		}
 	}
 	// The status result names the Canopy, which is how the view knows to

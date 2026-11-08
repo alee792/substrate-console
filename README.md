@@ -161,7 +161,8 @@ The local web page (`serve`, then open `/`) is itself a minimal MCP Apps host bu
 | `list_agents`, `get_agent` | read | With `--canopy-url`: agents, versions, definitions. |
 | `get_session` | read | A session's transcript, approvals and sandbox. |
 | `start_session` | write | With `dry_run`, the playground form; without, starts the session. |
-| `send_message`, `answer_approval`, `interrupt_session`, `suspend_session`, `resume_session` | write | Act at once and return the session. |
+| `send_message`, `interrupt_session`, `suspend_session`, `resume_session` | write | Act at once and return the session. |
+| `answer_approval` | write, app only | Allow or deny a waiting tool call. Only the session card's buttons call it: the model can't see it, so it can't approve its own agent's tool calls. |
 | `end_session` | destructive | |
 
 ## Layout

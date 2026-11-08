@@ -62,7 +62,7 @@ Claude connects to custom connectors from Anthropic's cloud, not from your machi
 
 This puts a door to your cluster on the internet. Anyone with the URL and token acts as whoever the console acts as. Before you do it:
 
-- Run it as your own ServiceAccount (`--service-account`), never the shared `ate-client` owner. `serve --public-url` refuses to start without an identity flag (`--service-account`, `--token-file`, `--token-command` or `--forward-token`), except with `--demo`.
+- Run it as your own ServiceAccount (`--service-account`), never the shared `ate-client` owner. `serve --public-url` refuses to start without an identity flag (`--service-account`, `--token-file`, `--token-command` or `--forward-token`), except with `--demo`. With `--canopy-url` it also needs `--read-only`: the console holds one Canopy API key, so anyone with the link could otherwise start sessions on it.
 - Prefer `--read-only` until you have a reason to write from a chat.
 - Use a tunnel you control, and stop it when you're done.
 

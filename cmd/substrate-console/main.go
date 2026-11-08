@@ -290,6 +290,12 @@ func checkIdentity(cmd string, f flags) error {
 		// ownership to anyone with the link, so fail closed.
 		return errors.New("--public-url would expose the shared ate-client owner account: pass --service-account namespace/name (or --token-file, --token-command or --forward-token) so the console acts as someone with only the access they need")
 	}
+	if cmd == "serve" && f.publicURL != "" && f.canopyURL != "" && !f.readOnly {
+		// The console holds one Canopy API key and Canopy checks no caller
+		// of its own, so behind a public URL anyone with the link could
+		// start sessions and approve tool calls as the console.
+		return errors.New("--canopy-url with --public-url would let anyone with the link start agent sessions and approve tool calls on the console's Canopy key: add --read-only, or leave out --canopy-url")
+	}
 	if !f.forward {
 		return nil
 	}
