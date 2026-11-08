@@ -117,6 +117,8 @@ The local web page (`serve`, then open `/`) is itself a minimal MCP Apps host bu
 
 ## Layout
 
+The diagrams are in [docs/architecture.md](docs/architecture.md).
+
 ```
 cmd/substrate-console   CLI: mcp (stdio), serve (HTTP + web page), version
 internal/mcpapp         MCP server, tools, MCP Apps / OpenAI metadata
