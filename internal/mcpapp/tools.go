@@ -2,6 +2,7 @@ package mcpapp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -409,8 +410,10 @@ func (s *Server) getActor(ctx context.Context, _ *mcp.CallToolRequest, in ActorI
 		d.Timeline = nil
 	}
 	var since time.Time
+	logsHidden := false
 	if d.Logs, since, err = s.opts.Backend.Logs(ctx, ref, 5); err != nil {
 		d.Logs = nil
+		logsHidden = errors.Is(err, backend.ErrLogsNeedViewer)
 	} else if !since.IsZero() {
 		d.LogsSince = &since
 	}
@@ -421,6 +424,9 @@ func (s *Server) getActor(ctx context.Context, _ *mcp.CallToolRequest, in ActorI
 		d.Logs = []model.LogLine{}
 	}
 	d.Hint = actorHint(c, a, d.Template, d.Logs)
+	if logsHidden && d.Hint == "" {
+		d.Hint = "Logs need cluster-wide viewer access."
+	}
 	args := map[string]any{"actors": []map[string]string{{"atespace": a.Atespace, "name": a.Name}}}
 	switch {
 	case a.State == model.StateCrashed || (ny && a.State.Transitional()):

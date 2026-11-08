@@ -45,13 +45,14 @@ type Options struct {
 }
 
 // Server holds the state shared by every MCP session. What it caches is
-// kept per caller (see callerState), since callers can see different parts
+// kept per caller (see caller.go), since callers can see different parts
 // of the cluster.
 type Server struct {
 	opts Options
 
 	mu      sync.Mutex
-	callers map[string]*callerState
+	snaps   map[string]snap
+	engines map[string]*engineState
 }
 
 // New returns the shared server state. Call MCP to get an *mcp.Server.
@@ -62,7 +63,7 @@ func New(opts Options) *Server {
 	if opts.Version == "" {
 		opts.Version = "dev"
 	}
-	return &Server{opts: opts, callers: map[string]*callerState{}}
+	return &Server{opts: opts, snaps: map[string]snap{}, engines: map[string]*engineState{}}
 }
 
 const instructions = `substrate-console reads and operates an Agent Substrate cluster.

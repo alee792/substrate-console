@@ -8,6 +8,10 @@ type callerKey struct{}
 // caller instead of as itself. Token is their ateapi bearer token.
 type Caller struct {
 	Token string
+	// Principal is the token's subject, used to keep per-person state such
+	// as resolved problems. Access never depends on it: every ateapi call
+	// carries Token, and ateapi checks it.
+	Principal string
 	// Atespace is an atespace the caller asked about. For a caller who
 	// can't list atespaces, it is read along with the configured ones.
 	Atespace string

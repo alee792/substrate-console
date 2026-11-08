@@ -149,7 +149,7 @@ Requires Go 1.27 and Node 22. `make test` runs Go vet and tests plus the TypeScr
 
 The live backend is written against Substrate v1.0.0's API and has been checked on a kind cluster running it: connection (ClusterTrustBundle lookup and token minting), WorkerPools, the template version flow, revert, crash grouping by node and the Prometheus name probe all work. Still to check on a real cluster:
 
-- `StateSince` comes from the actor's update or crash time; stuck-transition thresholds depend on that being accurate.
+- `StateSince` for actors that aren't running is the last write to the record (`update_time`), or the crash time. ateapi bumps `update_time` on every write, snapshot reports included, so a suspended actor can look suspended for less time than it has been. For a stuck transition it is the last write the transition made, which is what the threshold wants. A running actor's time comes from its worker assignment.
 - `drain_worker` end to end.
 - kind's bundled Prometheus doesn't scrape worker-pool metrics, so capacity and running-actor history are unavailable there.
 

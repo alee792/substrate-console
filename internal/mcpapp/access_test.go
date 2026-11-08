@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	ateapi "go.ate.dev/substrate/api/ateapi/v1"
@@ -170,6 +171,11 @@ func TestForwardActsAsEachCaller(t *testing.T) {
 			}
 		}
 	}
+	// Logs need the worker assignment, which only global viewers can list;
+	// the editor gets none and is told why, not the worker's other lines.
+	if res, txt := call(t, dev, "get_actor", s.running(t, "triage")); res["logs"] != nil && len(res["logs"].([]any)) > 0 || !strings.Contains(txt, "Logs need cluster-wide viewer access") {
+		t.Errorf("editor get_actor logs %v:\n%s", res["logs"], txt)
+	}
 	// Writes in their atespace work; elsewhere ateapi refuses them.
 	res, _ := call(t, dev, "suspend_actors", map[string]any{"actors": []any{s.running(t, "triage")}})
 	if tg := res["targets"].([]any)[0].(map[string]any); tg["ok"] != true {
@@ -265,5 +271,56 @@ func TestOIDC(t *testing.T) {
 	}
 	if st, _ := call(t, dev, "status", nil); !slices.Equal(atespacesOf(st), []string{"triage"}) {
 		t.Errorf("signed-in editor sees %v", atespacesOf(st))
+	}
+}
+
+// A problem the person resolved stays resolved when their token rotates:
+// history is kept per principal, snapshots per token.
+func TestResolvedSurvivesTokenRotation(t *testing.T) {
+	s := serveForward(t, func(*substratefake.Cluster) *shell.CallerAuth { return &shell.CallerAuth{} })
+	dev, err := s.as(t, s.token(substratefake.DemoTriageDev))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, _ := call(t, dev, "status", nil)
+	var revert map[string]any
+	for _, it := range st["items"].([]any) {
+		for _, a := range it.(map[string]any)["actions"].([]any) {
+			if a := a.(map[string]any); a["tool"] == "revert_actors" {
+				revert = a["args"].(map[string]any)
+			}
+		}
+	}
+	if revert == nil {
+		t.Fatal("no crash to revert in triage")
+	}
+	if res, _ := call(t, dev, "revert_actors", revert); !strings.HasPrefix(res["summary"].(string), "Reverted") {
+		t.Fatalf("revert: %v", res["summary"])
+	}
+	// A new token for the same person.
+	rotated, err := s.as(t, s.fake.World.IssueToken(substratefake.DemoTriageDev, substratefake.TokenOptions{TTL: 2 * time.Hour}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, _ = call(t, rotated, "status", nil)
+	resolved := 0
+	for _, it := range st["items"].([]any) {
+		if it.(map[string]any)["severity"] == "resolved" {
+			resolved++
+		}
+	}
+	if resolved == 0 {
+		t.Error("the reverted crash isn't shown as resolved after the token rotated")
+	}
+	// Someone else doesn't see the editor's history.
+	viewer, err := s.as(t, s.token(substratefake.DemoOnCall))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, _ = call(t, viewer, "status", nil)
+	for _, it := range st["items"].([]any) {
+		if it.(map[string]any)["severity"] == "resolved" {
+			t.Errorf("viewer sees the editor's resolved item %v", it.(map[string]any)["title"])
+		}
 	}
 }

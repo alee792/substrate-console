@@ -27,7 +27,7 @@ func withCaller(next mcp.MethodHandler) mcp.MethodHandler {
 	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
 		if ex := req.GetExtra(); ex != nil && ex.TokenInfo != nil {
 			if tok, _ := ex.TokenInfo.Extra[TokenKey].(string); tok != "" {
-				ctx = backend.WithCaller(ctx, backend.Caller{Token: tok})
+				ctx = backend.WithCaller(ctx, backend.Caller{Token: tok, Principal: ex.TokenInfo.UserID})
 			}
 		}
 		if call, ok := req.(*mcp.CallToolRequest); ok && call.Params != nil {
@@ -42,18 +42,29 @@ func withCaller(next mcp.MethodHandler) mcp.MethodHandler {
 	}
 }
 
-// callerState is what the server keeps for one caller: their latest
-// snapshot and the rules engine that remembers their resolved problems.
-type callerState struct {
+// The server keeps two things per caller, keyed differently:
+//
+//   - Snapshots, by a hash of the token. A snapshot is what that token was
+//     allowed to read, so only the same token may reuse it. Tokens rotate,
+//     so entries older than CacheFor are swept on every read.
+//   - The rules engine that remembers resolved problems, by principal, so
+//     history survives token rotation. The principal may be unverified (the
+//     token's own sub, in forward mode without an issuer), but it is only
+//     reached after the snapshot, read with the same token, succeeded:
+//     ateapi has accepted the token, so its sub is genuine.
+type snap struct {
+	c  *model.Cluster
+	at time.Time
+}
+
+type engineState struct {
 	engine   *rules.Engine
-	cached   map[string]*model.Cluster // by requested atespace
-	cacheAt  map[string]time.Time
 	lastUsed time.Time
 }
 
-// callerID names the caller in ctx without keeping their token: a hash of
-// it, or "" for the console's own identity.
-func callerID(ctx context.Context) string {
+// tokenKey names the token in ctx without keeping it: a hash, or "" for
+// the console's own identity.
+func tokenKey(ctx context.Context) string {
 	c, ok := backend.CallerFrom(ctx)
 	if !ok {
 		return ""
@@ -62,53 +73,65 @@ func callerID(ctx context.Context) string {
 	return hex.EncodeToString(h[:])
 }
 
-// state returns the caller's state, creating it, and drops callers idle
-// for a day. Call with s.mu held.
-func (s *Server) state(ctx context.Context) *callerState {
-	id := callerID(ctx)
-	now := time.Now()
-	for k, st := range s.callers {
-		if now.Sub(st.lastUsed) > 24*time.Hour {
-			delete(s.callers, k)
-		}
+func principalKey(ctx context.Context) string {
+	c, ok := backend.CallerFrom(ctx)
+	if !ok {
+		return ""
 	}
-	st := s.callers[id]
-	if st == nil {
-		st = &callerState{engine: rules.NewEngine(), cached: map[string]*model.Cluster{}, cacheAt: map[string]time.Time{}}
-		s.callers[id] = st
+	if c.Principal == "" {
+		return "token:" + tokenKey(ctx)
 	}
-	st.lastUsed = now
-	return st
+	return "sub:" + c.Principal
 }
 
+// engineFor returns the caller's rules engine. Engines idle for a day, the
+// span resolved problems are kept, are dropped.
 func (s *Server) engineFor(ctx context.Context) *rules.Engine {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.state(ctx).engine
+	now := time.Now()
+	for k, e := range s.engines {
+		if now.Sub(e.lastUsed) > 24*time.Hour {
+			delete(s.engines, k)
+		}
+	}
+	k := principalKey(ctx)
+	e := s.engines[k]
+	if e == nil {
+		e = &engineState{engine: rules.NewEngine()}
+		s.engines[k] = e
+	}
+	e.lastUsed = now
+	return e.engine
 }
 
 func (s *Server) snapshot(ctx context.Context) (*model.Cluster, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	st, key := s.state(ctx), backend.AtespaceFrom(ctx)
-	if c := st.cached[key]; c != nil && time.Since(st.cacheAt[key]) < s.opts.CacheFor {
-		return c, nil
+	now := time.Now()
+	for k, sn := range s.snaps {
+		if now.Sub(sn.at) >= s.opts.CacheFor {
+			delete(s.snaps, k)
+		}
+	}
+	key := tokenKey(ctx) + "|" + backend.AtespaceFrom(ctx)
+	if sn, ok := s.snaps[key]; ok {
+		return sn.c, nil
 	}
 	c, err := s.opts.Backend.Snapshot(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("read cluster: %w", err)
 	}
-	st.cached[key], st.cacheAt[key] = c, time.Now()
+	if s.opts.CacheFor > 0 {
+		s.snaps[key] = snap{c: c, at: time.Now()}
+	}
 	return c, nil
 }
 
-// invalidate drops every caller's snapshot, since a write shows up for
-// everyone.
+// invalidate drops every snapshot, since a write shows up for everyone.
 func (s *Server) invalidate() {
 	s.mu.Lock()
-	for _, st := range s.callers {
-		clear(st.cached)
-	}
+	clear(s.snaps)
 	s.mu.Unlock()
 }
 
