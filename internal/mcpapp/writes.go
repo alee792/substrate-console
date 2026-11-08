@@ -2,10 +2,13 @@ package mcpapp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/alee792/substrate-console/internal/model"
 )
@@ -146,7 +149,7 @@ func (s *Server) runVerb(ctx context.Context, v verb, in ActorsIn) (*mcp.CallToo
 		if in.DryRun {
 			t.OK = true
 		} else if err := v.do(ctx, ref); err != nil {
-			t.Reason = err.Error()
+			t.Reason = explain(err, "can't "+v.name+" actors in "+ref.Atespace)
 		} else {
 			t.OK = true
 		}
@@ -170,6 +173,9 @@ func (s *Server) drain(ctx context.Context, _ *mcp.CallToolRequest, in DrainIn) 
 			found = true
 		}
 	}
+	if !found && !c.Access.Workers {
+		return nil, nil, fmt.Errorf("draining workers needs cluster-wide owner access, which %s doesn't have", orYou(c.Access.Principal))
+	}
 	if !found {
 		return nil, nil, fmt.Errorf("worker %q not found; use pool/worker as list_worker_pools shows it", in.Worker)
 	}
@@ -182,7 +188,7 @@ func (s *Server) drain(ctx context.Context, _ *mcp.CallToolRequest, in DrainIn) 
 	}
 	if !in.DryRun {
 		if err := s.opts.Backend.Drain(ctx, in.Worker); err != nil {
-			return nil, nil, err
+			return nil, nil, errors.New(explain(err, "can't drain workers; that needs cluster owner"))
 		}
 		s.invalidate()
 	}
@@ -241,4 +247,19 @@ func actionText(r ActionResult) string {
 		b.WriteString("\nCall again with dry_run=false to apply.")
 	}
 	return b.String()
+}
+
+// explain words an ateapi error for the person who hit it. A denial says
+// what they can't do, since ateapi's message names relations, not tasks.
+func explain(err error, deniedMsg string) string {
+	switch status.Code(err) {
+	case codes.PermissionDenied:
+		return "you " + deniedMsg
+	case codes.Unauthenticated:
+		return "ateapi didn't accept your token; it may have expired"
+	}
+	if st, ok := status.FromError(err); ok {
+		return st.Message()
+	}
+	return err.Error()
 }

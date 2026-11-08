@@ -64,7 +64,11 @@ export interface Status {
   items: Item[]; vitals: Vital[]; pools?: Pool[];
   atespaces: { name: string; actors: number; problems: number }[];
   counts: Record<string, number>; generatedAt: string; notes?: string[];
+  access?: Access;
 }
+
+/** Who the console read the cluster as. */
+export interface Access { principal?: string; shared?: boolean; allAtespaces: boolean; workers: boolean }
 
 export interface ActorList {
   kind: "actors"; scope: string; filter: Record<string, unknown>; total: number; shown: number;

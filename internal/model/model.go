@@ -177,7 +177,33 @@ type Cluster struct {
 	Workers   []Worker   `json:"workers"`
 	Pools     []Pool     `json:"pools"`
 	Templates []Template `json:"templates"`
+	Access    Access     `json:"access"`
 }
+
+// Access says who the console read the cluster as, and what that identity
+// couldn't see. Substrate decides access with its own access policies, so
+// two people can get different clusters from the same console.
+type Access struct {
+	// Principal is the identity ateapi sees: a token's sub, such as
+	// system:serviceaccount:ate-users:alice. Empty when the token isn't a
+	// JWT. The console reads it without checking the signature; it is for
+	// display only, and ateapi is what checks the token.
+	Principal string `json:"principal,omitempty"`
+	// Shared is true when the console acts as the shared ate-client
+	// ServiceAccount, which ate-setup makes a cluster owner by default.
+	Shared bool `json:"shared,omitempty"`
+	// AllAtespaces is false when the identity can't list atespaces (it
+	// isn't a global viewer), so Atespaces holds only the ones the console
+	// was told about and could read.
+	AllAtespaces bool `json:"allAtespaces"`
+	// Workers is false when the identity can't list workers. Workers, pools
+	// and pool-wide metrics are then left out, since the console would read
+	// them with its own credentials.
+	Workers bool `json:"workers"`
+}
+
+// Limited reports whether some of the cluster was hidden from the caller.
+func (a Access) Limited() bool { return !a.AllAtespaces || !a.Workers }
 
 // Event is one entry on an actor's timeline.
 type Event struct {

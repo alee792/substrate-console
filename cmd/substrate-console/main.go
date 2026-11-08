@@ -22,6 +22,7 @@ import (
 
 	substratefake "github.com/alee792/substrate-fake"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	ateapi "go.ate.dev/substrate/api/ateapi/v1"
 
 	"github.com/alee792/substrate-console/internal/backend"
 	"github.com/alee792/substrate-console/internal/backend/ate"
@@ -46,8 +47,9 @@ Flags:
 type flags struct {
 	demo, readOnly                    bool
 	kubeconfig, kubeContext, endpoint string
-	tokenFile, prometheusURL, addr    string
-	noFonts, auth                     bool
+	tokenFile, tokenCommand, sa       string
+	prometheusURL, addr, atespaces    string
+	noFonts, auth, forward            bool
 	authTokenFile                     string
 }
 
@@ -89,11 +91,15 @@ func newFlagSet(name string, f *flags) *flag.FlagSet {
 	fs.StringVar(&f.kubeconfig, "kubeconfig", "", "path to the kubeconfig (default: the usual kubectl rules)")
 	fs.StringVar(&f.kubeContext, "context", "", "kubeconfig context to use")
 	fs.StringVar(&f.endpoint, "endpoint", "", "ateapi address; default is a port-forward to the api Service, as kubectl ate does")
-	fs.StringVar(&f.tokenFile, "token-file", "", "file holding an ateapi bearer token; default mints an ate-client ServiceAccount token")
+	fs.StringVar(&f.sa, "service-account", os.Getenv("ATE_SERVICE_ACCOUNT"), "namespace/name of your own ServiceAccount; the console uses your kubeconfig to get short-lived ateapi tokens for it (default $ATE_SERVICE_ACCOUNT, else the shared ate-client owner account)")
+	fs.StringVar(&f.tokenFile, "token-file", "", "file holding the console's ateapi bearer token, reread on every call")
+	fs.StringVar(&f.tokenCommand, "token-command", "", "command that prints the console's ateapi token, rerun when it expires, e.g. 'gcloud auth print-identity-token'")
+	fs.StringVar(&f.atespaces, "atespaces", "", "comma-separated atespaces to show people who can't list atespaces")
 	fs.StringVar(&f.prometheusURL, "prometheus-url", "", "Prometheus base URL for vitals and charts, e.g. http://localhost:9090")
 	fs.StringVar(&f.addr, "addr", "127.0.0.1:7878", "serve: address to listen on")
 	fs.BoolVar(&f.auth, "auth", false, "serve: require a token on /mcp (on by default beyond loopback); generates one unless --auth-token-file or $SUBSTRATE_CONSOLE_TOKEN sets it")
 	fs.StringVar(&f.authTokenFile, "auth-token-file", "", "serve: file holding the token /mcp requires; implies --auth")
+	fs.BoolVar(&f.forward, "forward-token", false, "serve: act as each caller: /mcp requires the caller's own ateapi token and sends it to ateapi, so Substrate's access policies decide what they see")
 	fs.BoolVar(&f.noFonts, "no-web-fonts", false, "use host and system fonts only, so the view's CSP allows no external origins")
 	return fs
 }
@@ -111,13 +117,40 @@ func run(ctx context.Context, cmd string, f flags, log *slog.Logger) error {
 			return fmt.Errorf("start the demo cluster: %w", err)
 		}
 		defer c.Close()
-		f.kubeconfig, f.kubeContext, f.endpoint, f.tokenFile = c.Kubeconfig, c.Context, c.APIEndpoint, ""
+		f.kubeconfig, f.kubeContext, f.endpoint, f.tokenFile, f.tokenCommand = c.Kubeconfig, c.Context, c.APIEndpoint, "", ""
 		f.prometheusURL = c.PrometheusURL
 		log.Info("serving the demo cluster", "kubeconfig", c.Kubeconfig, "ateapi", c.APIEndpoint, "prometheus", c.PrometheusURL)
+		if f.atespaces == "" {
+			// Name the demo's atespaces, as an operator would name a team's,
+			// so people who can't list them still find theirs.
+			if r, err := c.Client().ListAtespaces(ctx, &ateapi.ListAtespacesRequest{}); err == nil {
+				for _, a := range r.GetAtespaces() {
+					f.atespaces += a.GetMetadata().GetName() + ","
+				}
+			}
+		}
+		if f.forward && cmd == "serve" {
+			// Demo tokens go to the terminal only, like a generated /mcp
+			// token. They're for a throwaway cluster, but still not for logs.
+			fmt.Fprintf(os.Stderr, "\n  Tokens to try /mcp with, valid for a day:\n")
+			for _, p := range []struct{ who, principal string }{
+				{"owner (ate-client)", substratefake.ClientPrincipal},
+				{"global viewer", substratefake.DemoOnCall},
+				{"triage editor", substratefake.DemoTriageDev},
+			} {
+				fmt.Fprintf(os.Stderr, "  %-19s %s\n", p.who+":", c.World.IssueToken(p.principal, substratefake.TokenOptions{TTL: 24 * time.Hour}))
+			}
+			fmt.Fprintln(os.Stderr)
+		}
+	}
+	if err := checkIdentity(cmd, f); err != nil {
+		return err
 	}
 	{
 		live, err := ate.New(ctx, ate.Config{
-			Kubeconfig: f.kubeconfig, Context: f.kubeContext, Endpoint: f.endpoint, TokenFile: f.tokenFile,
+			Kubeconfig: f.kubeconfig, Context: f.kubeContext, Endpoint: f.endpoint,
+			ServiceAccount: f.sa, TokenFile: f.tokenFile, TokenCommand: f.tokenCommand, Forward: f.forward,
+			Atespaces: splitList(f.atespaces),
 		})
 		if err != nil {
 			return fmt.Errorf("connect to Substrate: %w (use --demo to try the console without a cluster)", err)
@@ -141,11 +174,15 @@ func run(ctx context.Context, cmd string, f flags, log *slog.Logger) error {
 	case "mcp":
 		return app.MCP().Run(ctx, &mcp.StdioTransport{})
 	case "serve":
-		token, generated, err := serveToken(f)
-		if err != nil {
-			return err
+		var token string
+		var generated bool
+		var err error
+		if !f.forward {
+			if token, generated, err = serveToken(f); err != nil {
+				return err
+			}
 		}
-		srv := &http.Server{Addr: f.addr, Handler: shell.Handler(app.MCP(), web.ShellHTML, token), ReadHeaderTimeout: 10 * time.Second}
+		srv := &http.Server{Addr: f.addr, Handler: shell.Handler(app.MCP(), web.ShellHTML, shell.Auth{Token: token, Forward: f.forward}), ReadHeaderTimeout: 10 * time.Second}
 		go func() {
 			<-ctx.Done()
 			sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -154,6 +191,8 @@ func run(ctx context.Context, cmd string, f flags, log *slog.Logger) error {
 		}()
 		page := "http://" + f.addr + "/"
 		switch {
+		case f.forward:
+			log.Info("console ready; /mcp acts as each caller and needs their own ateapi token", "url", page, "mcp", page+"mcp")
 		case token == "":
 			log.Info("console ready", "url", page, "mcp", page+"mcp")
 		case generated:
@@ -171,6 +210,45 @@ func run(ctx context.Context, cmd string, f flags, log *slog.Logger) error {
 		return nil
 	}
 	return nil
+}
+
+// checkIdentity rejects flag combinations that disagree about whose token
+// the console sends.
+func checkIdentity(cmd string, f flags) error {
+	own := 0
+	for _, set := range []bool{f.sa != "", f.tokenFile != "", f.tokenCommand != ""} {
+		if set {
+			own++
+		}
+	}
+	if own > 1 {
+		return errors.New("pick one of --service-account, --token-file and --token-command")
+	}
+	if f.sa != "" {
+		if ns, name, ok := strings.Cut(f.sa, "/"); !ok || ns == "" || name == "" || strings.Contains(name, "/") {
+			return fmt.Errorf("--service-account %q: want namespace/name, e.g. ate-users/alice", f.sa)
+		}
+	}
+	if !f.forward {
+		return nil
+	}
+	if cmd != "serve" {
+		return errors.New("--forward-token is for serve; over stdio the console has one user, so pass --service-account, --token-file or --token-command")
+	}
+	if own > 0 {
+		return errors.New("--forward-token never uses the console's own token, so leave out --service-account, --token-file and --token-command")
+	}
+	return nil
+}
+
+func splitList(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // serveToken decides whether /mcp needs a token and returns it. Auth is on
