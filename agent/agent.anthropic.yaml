@@ -1,0 +1,13 @@
+# The body of Anthropic's agents.create for the agent that works on this
+# repository. Canopy (github.com/alee792/canopy) runs it on Claude Code:
+# `canopy dev agent/` to try it, `canopy push agent/` to publish a version.
+name: console-dev
+description: Works on substrate-console, the MCP App console for Substrate clusters.
+model:
+  id: claude-opus-5-5
+  effort: high
+tools:
+  - type: agent_toolset_20260401
+    configs:
+      - name: web_fetch
+        permission_policy: {type: always_ask}
