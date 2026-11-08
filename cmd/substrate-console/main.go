@@ -25,6 +25,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	ateapi "go.ate.dev/substrate/api/ateapi/v1"
 
+	"github.com/alee792/substrate-console/internal/agents"
 	"github.com/alee792/substrate-console/internal/backend"
 	"github.com/alee792/substrate-console/internal/backend/ate"
 	"github.com/alee792/substrate-console/internal/mcpapp"
@@ -52,6 +53,7 @@ type flags struct {
 	prometheusURL, addr, atespaces    string
 	noFonts, auth, forward            bool
 	authTokenFile, publicURL          string
+	canopyURL, canopyKeyFile          string
 }
 
 func main() {
@@ -102,6 +104,8 @@ func newFlagSet(name string, f *flags) *flag.FlagSet {
 	fs.StringVar(&f.authTokenFile, "auth-token-file", "", "serve: file holding the token /mcp requires; implies --auth")
 	fs.StringVar(&f.publicURL, "public-url", "", "serve: the https URL a tunnel or proxy serves the console at, e.g. https://console.example.com; /mcp then accepts that host and requires a token")
 	fs.BoolVar(&f.forward, "forward-token", false, "serve: act as each caller: /mcp requires the caller's own ateapi token and sends it to ateapi, so Substrate's access policies decide what they see")
+	fs.StringVar(&f.canopyURL, "canopy-url", os.Getenv("CANOPY_URL"), "Canopy to show agents from, e.g. http://localhost:8000 (default $CANOPY_URL); its API key comes from $CANOPY_API_KEY or --canopy-key-file")
+	fs.StringVar(&f.canopyKeyFile, "canopy-key-file", "", "file holding the Canopy API key, instead of $CANOPY_API_KEY")
 	fs.BoolVar(&f.noFonts, "no-web-fonts", false, "use host and system fonts only, so the view's CSP allows no external origins")
 	return fs
 }
@@ -163,13 +167,20 @@ func run(ctx context.Context, cmd string, f flags, log *slog.Logger) error {
 			m = metrics.NewPrometheus(f.prometheusURL)
 		}
 	}
+	ag, err := canopyClient(f)
+	if err != nil {
+		return err
+	}
+	if ag != nil {
+		log.Info("showing agents from Canopy", "canopy", ag.Host())
+	}
 	fonts := []string{"https://fonts.googleapis.com", "https://fonts.gstatic.com"}
 	if f.noFonts {
 		fonts = nil
 	}
 	app := mcpapp.New(mcpapp.Options{
 		Backend: b, Metrics: m, ViewHTML: web.ConsoleHTML, Version: version,
-		ReadOnly: f.readOnly, FontDomains: fonts,
+		ReadOnly: f.readOnly, FontDomains: fonts, Agents: ag,
 	})
 
 	switch cmd {
@@ -229,6 +240,33 @@ func run(ctx context.Context, cmd string, f flags, log *slog.Logger) error {
 	return nil
 }
 
+// canopyClient connects the agents section, when a Canopy is configured.
+func canopyClient(f flags) (*agents.Client, error) {
+	if f.canopyURL == "" {
+		if f.canopyKeyFile != "" {
+			return nil, errors.New("--canopy-key-file needs --canopy-url")
+		}
+		return nil, nil
+	}
+	if f.forward {
+		// Canopy has one API key for the console, and checks no caller of
+		// its own yet, so every caller would act as the console.
+		return nil, errors.New("--canopy-url can't be combined with --forward-token: the console has one Canopy API key, so every caller would act as it")
+	}
+	key := strings.TrimSpace(os.Getenv("CANOPY_API_KEY"))
+	if f.canopyKeyFile != "" {
+		b, err := os.ReadFile(f.canopyKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("read --canopy-key-file: %w", err)
+		}
+		key = strings.TrimSpace(string(b))
+	}
+	if key == "" {
+		return nil, errors.New("--canopy-url needs an API key: set CANOPY_API_KEY or pass --canopy-key-file")
+	}
+	return agents.New(agents.Config{URL: f.canopyURL, APIKey: key, HTTPClient: &http.Client{Timeout: 2 * time.Minute}})
+}
+
 // checkIdentity rejects flag combinations that disagree about whose token
 // the console sends.
 func checkIdentity(cmd string, f flags) error {
@@ -251,6 +289,12 @@ func checkIdentity(cmd string, f flags) error {
 		// ate-client owner. Behind a public URL that would hand cluster
 		// ownership to anyone with the link, so fail closed.
 		return errors.New("--public-url would expose the shared ate-client owner account: pass --service-account namespace/name (or --token-file, --token-command or --forward-token) so the console acts as someone with only the access they need")
+	}
+	if cmd == "serve" && f.publicURL != "" && f.canopyURL != "" && !f.readOnly {
+		// The console holds one Canopy API key and Canopy checks no caller
+		// of its own, so behind a public URL anyone with the link could
+		// start sessions and approve tool calls as the console.
+		return errors.New("--canopy-url with --public-url would let anyone with the link start agent sessions and approve tool calls on the console's Canopy key: add --read-only, or leave out --canopy-url")
 	}
 	if !f.forward {
 		return nil

@@ -65,6 +65,8 @@ export interface Status {
   atespaces: { name: string; actors: number; problems: number }[];
   counts: Record<string, number>; generatedAt: string; notes?: string[];
   access?: Access;
+  /** The Canopy agents come from, when the console has one. */
+  canopy?: string;
 }
 
 /** Who the console read the cluster as. */
@@ -94,4 +96,80 @@ export interface ActionResult {
   args: Record<string, unknown>; note?: string;
 }
 
-export type Result = Status | ActorList | ActorDetail | MetricResult | ActionResult | TemplateList | TemplateDetail | Draft;
+// ---------- agents (internal/agents, internal/mcpapp/agents.go) ----------
+
+export type Lab = "anthropic" | "openai";
+
+export interface Source { url: string; ref?: string; path?: string; commit?: string }
+
+export interface Agent {
+  id: string; name: string; description?: string; lab: Lab; harness: string; model: string; version: number;
+  source?: Source; createdAt: string; updatedAt: string; sessions: number; active: number; lastActive?: string;
+}
+
+export interface AgentVersion {
+  version: number; origin: "git" | "api"; source?: Source; createdAt: string;
+  contents?: { instructions: boolean; skills: string[]; mcpServers: string[]; subagents: string[] };
+  bundle?: string; bundleSize?: number;
+}
+
+export interface SessionRow {
+  id: string; agentId?: string; status: SessionStatus; envStatus: string; harness: string; model: string;
+  createdAt: string; lastActive: string; spendCents: number; preview?: string;
+}
+
+export type SessionStatus = "idle" | "in_progress" | "requires_action" | "failed";
+
+export interface AgentList { kind: "agents"; canopy: string; agents: Agent[] }
+
+export interface AgentPage {
+  kind: "agent"; agent: Agent; versions: AgentVersion[]; shown: number; sessions: SessionRow[];
+  definition?: unknown; definitionNote?: string; actions: Action[];
+}
+
+export interface Environment { id: string; name: string; network: string; hosts?: string[]; packageManagers?: boolean; mcpServers?: boolean }
+
+export interface Playground {
+  kind: "playground"; agent: Agent; versions: number[]; environments: Environment[];
+  version?: number; environment?: string; network?: string; allowed_domains?: string[];
+  repository?: string; branch?: string; message?: string; problems: Record<string, string>;
+}
+
+export interface StartArgs {
+  agent: string; version?: number; environment?: string; network?: string; allowed_domains?: string[];
+  repository?: string; branch?: string; message: string;
+}
+
+export interface TItem {
+  id: string; kind: string; status: string; text?: string; command?: string; output?: string; exitCode?: number;
+  name?: string; server?: string; args?: string; changes?: { path: string; kind: string }[]; error?: string; query?: string;
+  decision?: string;
+}
+
+export interface Turn {
+  id: string; status: "queued" | "running" | "completed" | "failed" | "cancelled"; input?: string;
+  started?: string; ended?: string; items: TItem[]; error?: string;
+  usage?: { input: number; cached: number; output: number }; dropped?: number;
+}
+
+export interface Approval { eventId: string; tool: string; server?: string; command?: string; input?: string }
+
+export interface SessionInfo {
+  id: string; agentId?: string; lab: Lab; harness: string; model: string; status: SessionStatus; error?: string;
+  threadId?: string; createdAt: string; lastActive: string; spendCents: number; spendLimitCents?: number;
+  computeSeconds: number; usage: { input: number; cached: number; output: number };
+  sandbox: {
+    status: string; error?: string; network: string; provider?: string; actor?: string; atespace?: string;
+    template?: string; node?: string; image?: string; size?: string; egress?: string[];
+  };
+  metadata?: Record<string, string>;
+}
+
+export interface SessionPage {
+  kind: "session"; session: SessionInfo; agent?: Agent;
+  transcript: { turns: Turn[]; waiting: unknown[]; earlier?: number; cursor: number };
+  approvals: Approval[]; blocked?: string; actions: Action[]; done?: string;
+}
+
+export type Result = Status | ActorList | ActorDetail | MetricResult | ActionResult | TemplateList | TemplateDetail | Draft
+  | AgentList | AgentPage | Playground | SessionPage;

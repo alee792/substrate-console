@@ -1,9 +1,10 @@
 import { render } from "preact";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { App, applyDocumentTheme, applyHostStyleVariables, type McpUiHostContext } from "@modelcontextprotocol/ext-apps";
-import type { Action, ActionResult, Result, Status, TemplateSpec } from "./types";
+import type { Action, ActionResult, Result, StartArgs, Status, TemplateSpec } from "./types";
 import { ActionPage, ActorPage, ActorsPage, Confirm, MetricPage, StatusPage, isWrite, type Nav } from "./pages";
 import { DraftPage, TemplatePage, TemplatesPage } from "./templates";
+import { AgentPageView, AgentsPage, PlaygroundPage, SessionPageView } from "./agents";
 import "./styles.css";
 
 declare const __VERSION__: string;
@@ -33,7 +34,8 @@ function applyContext(ctx?: McpUiHostContext) {
 
 // ChatGPT's deep links arrive as hostContext["openai/deepLink"].url, an
 // app-relative path. Routes: /, /templates, /templates/{atespace}/{name},
-// /actors, /actors/{atespace}/{name}, /atespaces/{atespace}, /latency.
+// /actors, /actors/{atespace}/{name}, /atespaces/{atespace}, /latency,
+// /agents, /agents/{id}, /sessions/{id}.
 function route(url: string): { tool: string; args: Record<string, unknown> } | undefined {
   const u = new URL(url, "https://app.invalid");
   const p = u.pathname.split("/").filter(Boolean).map(decodeURIComponent);
@@ -45,6 +47,9 @@ function route(url: string): { tool: string; args: Record<string, unknown> } | u
   if (p[0] === "actors") return { tool: "list_actors", args: { ...sc, state: u.searchParams.get("state") ?? undefined } };
   if (p[0] === "templates" && p.length >= 3) return { tool: "get_template", args: { atespace: p[1], name: p[2] } };
   if (p[0] === "templates") return { tool: "list_templates", args: sc };
+  if (p[0] === "agents" && p[1]) return { tool: "get_agent", args: { agent: p[1] } };
+  if (p[0] === "agents") return { tool: "list_agents", args: {} };
+  if (p[0] === "sessions" && p[1]) return { tool: "get_session", args: { session: p[1] } };
   if (p[0] === "latency") return { tool: "query_metric", args: { metric: "resume_p95", by: "template", window: "6h", ...sc } };
   return undefined;
 }
@@ -70,6 +75,10 @@ function context(e: Entry): { text: string; data: Record<string, unknown> } {
     case "action": return { text: `Viewing the result of ${d.verb}: ${d.summary}`, data: { page: "action", verb: d.verb, dryRun: d.dryRun } };
     case "templates": return { text: `Viewing ${d.templates.length} actor templates${d.scope ? " in " + d.scope : ""}.`, data: { page: "templates", atespace: d.scope || null } };
     case "template": return { text: `Viewing template ${d.template.atespace}/${d.template.name}: ${d.template.actors} actors, ${d.template.crashed} crashed, golden snapshot ${d.template.golden.state}.`, data: { page: "template", atespace: d.template.atespace, name: d.template.name } };
+    case "agents": return { text: `Viewing ${d.agents.length} agents on Canopy (${d.canopy}).`, data: { page: "agents" } };
+    case "agent": return { text: `Viewing agent ${d.agent.name} (${d.agent.id}), ${d.agent.harness} with ${d.agent.model}, definition at v${d.shown} of ${d.agent.version}.`, data: { page: "agent", agent: d.agent.id, version: d.shown } };
+    case "playground": return { text: `Filling in a session to start with ${d.agent.name}. It doesn't start until the user clicks Start session.`, data: { page: "playground", agent: d.agent.id } };
+    case "session": return { text: `Viewing session ${d.session.id}${d.agent ? ` with ${d.agent.name}` : ""}: ${d.session.status}, ${d.transcript.turns.length} turns${d.approvals.length ? `, waiting on ${d.approvals.length} approval` : ""}.`, data: { page: "session", session: d.session.id, status: d.session.status } };
     case "draft": return { text: `Editing a template draft: ${d.spec.atespace}/${d.spec.name ?? "(unnamed)"}${d.spec.from ? `, new version of ${d.spec.from}` : ""}. It isn't created until the user clicks Create.`, data: { page: "draft", spec: d.spec } };
   }
 }
@@ -80,6 +89,7 @@ const Icon = {
   overview: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="5.5" /><path d="M8 5v3l2 1.5" stroke-linecap="round" /></svg>,
   actors: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2.5" y="2.5" width="4.5" height="4.5" rx="1" /><rect x="9" y="2.5" width="4.5" height="4.5" rx="1" /><rect x="2.5" y="9" width="4.5" height="4.5" rx="1" /><rect x="9" y="9" width="4.5" height="4.5" rx="1" /></svg>,
   templates: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"><path d="M4.5 2.5h5l2.5 2.5v8.5h-7.5z" /><path d="M9.5 2.5V5H12" /><path d="M6.5 8.5h3M6.5 11h3" stroke-linecap="round" /></svg>,
+  agents: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"><path d="M8 2.5 13 5.25v5.5L8 13.5 3 10.75v-5.5Z" /><path d="M3 5.25 8 8l5-2.75M8 8v5.5" /></svg>,
   space: <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2.5 5.5h11v7h-11z" /><path d="M2.5 5.5 4 3h3l1 2.5" stroke-linejoin="round" /></svg>,
 };
 
@@ -190,10 +200,14 @@ function Root() {
     } catch { /* keep the last good view */ }
   }
 
-  // Poll in full screen only; an inline card in a chat stays still.
+  // Poll in full screen only; an inline card in a chat stays still, except
+  // a session that's working, which follows along. Forms aren't polled,
+  // so a refresh never overwrites what someone is typing.
   useEffect(() => {
-    if (!full || !top || top.data.kind === "action") return;
-    const id = setInterval(refresh, 5000);
+    if (!top || ["action", "draft", "playground"].includes(top.data.kind)) return;
+    const live = top.data.kind === "session" && (top.data.session.status === "in_progress" || top.data.session.sandbox.status === "pending");
+    if (!full && !live) return;
+    const id = setInterval(refresh, live ? 1500 : 5000);
     return () => clearInterval(id);
   }, [full, top]);
 
@@ -205,7 +219,8 @@ function Root() {
   }, [full, connected]);
 
   async function act(a: Action) {
-    if (a.tool === "create_template") return go(a.tool, { ...a.args, dry_run: true });
+    if (a.tool === "create_template" || a.tool === "start_session") return go(a.tool, { ...a.args, dry_run: true });
+    if (SESSION_TOOLS.has(a.tool)) { await run(a.tool, a.args); return; }
     if (!isWrite(a.tool)) return go(a.tool, a.args);
     setError(undefined);
     try {
@@ -220,7 +235,17 @@ function Root() {
       const done = (await call(r.tool, { ...r.args, dry_run: false })) as ActionResult;
       setConfirm(undefined);
       flash(done.summary);
-      if (r.tool === "create_actor") await go("get_actor", { atespace: r.args.atespace, name: r.args.name });
+      if (r.tool === "end_session") {
+        // Back to where the session was opened from, read again so the
+        // ended session is gone from it.
+        const prev = stack[stack.length - 2];
+        if (!prev) await go("list_agents", {}, true);
+        else {
+          const data = await call(prev.tool, prev.args).catch(() => prev.data);
+          setStack((s) => [...s.slice(0, -2), { ...prev, data }]);
+        }
+      }
+      else if (r.tool === "create_actor") await go("get_actor", { atespace: r.args.atespace, name: r.args.name });
       else if (r.tool === "delete_template") { setStack((s) => s.slice(0, -1)); await go("list_templates", { atespace: r.args.atespace }, true); }
       else if (top?.data.kind === "action") setStack((s) => [...s.slice(0, -1), { ...top, data: done }]);
       else await refresh();
@@ -238,6 +263,31 @@ function Root() {
       const data = await call("create_template", { ...spec, dry_run: false });
       if (data.kind === "template") flash(`Created ${data.template.name}. Building its golden snapshot.`);
       setStack((s) => [...s.slice(0, -1), { tool: data.kind === "template" ? "get_template" : "create_template", args: data.kind === "template" ? { atespace: data.template.atespace, name: data.template.name } : { ...spec, dry_run: true }, data }]);
+    } catch (e) { setError(String((e as Error).message ?? e)); }
+  }
+
+  // Session tools act at once and return the session, which replaces the
+  // page. Says whether it worked, so a composer knows to clear.
+  async function run(tool: string, args: Record<string, unknown>): Promise<boolean> {
+    setError(undefined);
+    try {
+      const data = await call(tool, args);
+      setStack((s) => [...s.slice(0, -1), { tool: "get_session", args: { session: args.session }, data }]);
+      if (data.kind === "session" && data.done && tool !== "send_message") flash(data.done);
+      return true;
+    } catch (e) { setError(String((e as Error).message ?? e)); return false; }
+  }
+
+  // The playground starts the session for real; the server sends the form
+  // back with problems marked, or the new session.
+  async function startSession(args: StartArgs) {
+    setError(undefined);
+    try {
+      const data = await call("start_session", { ...args, dry_run: false });
+      if (data.kind === "session") {
+        flash(data.done ?? "Started.");
+        setStack((s) => [...s.slice(0, -1), { tool: "get_session", args: { session: data.session.id }, data }]);
+      } else setStack((s) => [...s.slice(0, -1), { tool: "start_session", args: { ...args, dry_run: true }, data }]);
     } catch (e) { setError(String((e as Error).message ?? e)); }
   }
 
@@ -268,6 +318,10 @@ function Root() {
     : top.data.kind === "templates" ? <TemplatesPage list={top.data} nav={nav} />
     : top.data.kind === "template" ? <TemplatePage d={top.data} nav={nav} />
     : top.data.kind === "draft" ? <DraftPage key={JSON.stringify(top.data.spec)} d={top.data} nav={nav} submit={submitDraft} />
+    : top.data.kind === "agents" ? <AgentsPage list={top.data} nav={nav} />
+    : top.data.kind === "agent" ? <AgentPageView d={top.data} nav={nav} />
+    : top.data.kind === "playground" ? <PlaygroundPage key={JSON.stringify(top.data.problems) + top.data.agent.id} d={top.data} nav={nav} start={startSession} />
+    : top.data.kind === "session" ? <SessionPageView key={top.data.session.id} d={top.data} nav={nav} run={run} />
     : <ActionPage r={top.data} nav={nav} onConfirm={top.data.dryRun ? () => apply(top.data as ActionResult) : undefined} />;
 
   const overlay = (
@@ -293,7 +347,7 @@ function Root() {
   }
 
   const scope = (top?.args.atespace as string) || "";
-  const section = ({ status: "status", templates: "list_templates", template: "list_templates", draft: "list_templates", actors: "list_actors", actor: "list_actors" } as Record<string, string>)[top?.data.kind ?? ""];
+  const section = ({ status: "status", templates: "list_templates", template: "list_templates", draft: "list_templates", actors: "list_actors", actor: "list_actors", agents: "list_agents", agent: "list_agents", playground: "list_agents", session: "list_agents" } as Record<string, string>)[top?.data.kind ?? ""];
   const at = (tool: string) => section === tool;
   const withScope = (a: Record<string, unknown>) => (scope ? { ...a, atespace: scope } : a);
   return (
@@ -313,6 +367,11 @@ function Root() {
           <button type="button" class={`ni cursor-interaction${at("list_actors") ? " on" : ""}`} onClick={() => go("list_actors", withScope({}), true)}>
             {Icon.actors}Actors{status && <span class="ct">{actorCount(status, scope).toLocaleString()}</span>}
           </button>
+          {status?.canopy && (
+            <button type="button" class={`ni cursor-interaction${at("list_agents") ? " on" : ""}`} onClick={() => go("list_agents", {}, true)}>
+              {Icon.agents}Agents
+            </button>
+          )}
         </nav>
         {status && (
           <nav class="nav">
@@ -347,7 +406,10 @@ function Root() {
 }
 
 // When the host doesn't say which tool produced the first result.
-const KIND_TOOL: Record<string, string> = { status: "status", actors: "list_actors", actor: "get_actor", metric: "query_metric", templates: "list_templates", template: "get_template", draft: "create_template" };
+const KIND_TOOL: Record<string, string> = { status: "status", actors: "list_actors", actor: "get_actor", metric: "query_metric", templates: "list_templates", template: "get_template", draft: "create_template", agents: "list_agents", agent: "get_agent", playground: "start_session", session: "get_session" };
+
+/** Tools that act on a session at once and return it. */
+const SESSION_TOOLS = new Set(["send_message", "answer_approval", "interrupt_session", "suspend_session", "resume_session"]);
 
 /** Switching scope keeps you on the same list. */
 function sameTool(tool?: string) {
@@ -365,6 +427,10 @@ function crumb(e?: Entry): string {
     case "templates": return "Templates";
     case "template": return e.data.template.name;
     case "draft": return e.data.summary;
+    case "agents": return "Agents";
+    case "agent": return e.data.agent.name;
+    case "playground": return `Try ${e.data.agent.name}`;
+    case "session": return e.data.agent ? `${e.data.agent.name} session` : "Session";
   }
 }
 

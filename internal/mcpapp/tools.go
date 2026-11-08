@@ -158,6 +158,9 @@ func (s *Server) status(ctx context.Context, _ *mcp.CallToolRequest, in ScopeIn)
 		return nil, nil, fmt.Errorf("atespace %q not found; known atespaces: %s", in.Atespace, strings.Join(c.Atespaces, ", "))
 	}
 	st := s.engineFor(ctx).Evaluate(ctx, c, in.Atespace, s.metricsFor(c))
+	if s.opts.Agents != nil {
+		st.Canopy = s.opts.Agents.Host()
+	}
 	return &mcp.CallToolResult{Content: text(statusText(st))}, st, nil
 }
 

@@ -99,6 +99,8 @@ type Status struct {
 	GeneratedAt time.Time         `json:"generatedAt"`
 	Notes       []string          `json:"notes,omitempty"`
 	Access      model.Access      `json:"access"`
+	// Canopy is the Canopy the console shows agents from, or "".
+	Canopy string `json:"canopy,omitempty"`
 }
 
 // Thresholds for the stuck-transition rule. Resumes normally take well under
