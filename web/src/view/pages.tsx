@@ -248,7 +248,7 @@ export function ActorPage({ d, nav }: { d: ActorDetail; nav: Nav }) {
             </Sec>
           )}
           {d.logs.length > 0 && (
-            <Sec title="Logs" right={`Last ${d.logs.length} lines`}>
+            <Sec title="Logs" right={d.logsSince ? `Since ${clock(d.logsSince, false)} on this worker` : `Last ${d.logs.length} lines`}>
               <div class="logs"><pre>{d.logs.map((l, i) => (
                 <span key={i}><span class="ts">{clock(l.time)}</span>  <span class={l.error ? "e" : ""}>{l.text}</span>{"\n"}</span>
               ))}</pre></div>

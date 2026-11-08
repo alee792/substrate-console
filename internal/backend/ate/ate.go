@@ -346,19 +346,30 @@ func (l *Live) Timeline(ctx context.Context, r model.ActorRef) ([]model.Event, e
 
 // Logs implements backend.Backend, reading the worker pod's log as
 // `kubectl ate logs` does. It only works while the actor runs.
-func (l *Live) Logs(ctx context.Context, r model.ActorRef, tail int) ([]model.LogLine, error) {
+//
+// A worker hosts actors one after another, so its log holds whatever ran
+// there before this actor. Lines are read from the start of the current
+// assignment, which ateapi only records as the actor's last update: the
+// resume that put it on this worker, or a later write. A later write cuts
+// lines that are the actor's, which is the safe way to be wrong.
+func (l *Live) Logs(ctx context.Context, r model.ActorRef, tail int) ([]model.LogLine, time.Time, error) {
 	a, err := l.api.GetActor(ctx, &ateapi.GetActorRequest{Actor: ref(r)})
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 	wa := a.GetStatus().GetWorkerAssignment()
 	if a.GetStatus().GetState() != ateapi.ActorState_ACTOR_STATE_RUNNING || wa.GetWorkerPod() == "" {
-		return nil, fmt.Errorf("%s is not running, and logs of past runs need a log backend", r)
+		return nil, time.Time{}, fmt.Errorf("%s is not running, and logs of past runs need a log backend", r)
+	}
+	since := a.GetMetadata().GetUpdateTime().AsTime()
+	if !a.GetMetadata().GetUpdateTime().IsValid() {
+		return nil, time.Time{}, fmt.Errorf("%s has no update time, so its lines can't be told from the worker's earlier output", r)
 	}
 	n := int64(tail)
-	stream, err := l.k8s.CoreV1().Pods(wa.GetWorkerNamespace()).GetLogs(wa.GetWorkerPod(), &corev1.PodLogOptions{TailLines: &n, Timestamps: true}).Stream(ctx)
+	st := metav1.NewTime(since)
+	stream, err := l.k8s.CoreV1().Pods(wa.GetWorkerNamespace()).GetLogs(wa.GetWorkerPod(), &corev1.PodLogOptions{TailLines: &n, Timestamps: true, SinceTime: &st}).Stream(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("read logs: %w", err)
+		return nil, time.Time{}, fmt.Errorf("read logs: %w", err)
 	}
 	defer stream.Close()
 	var out []model.LogLine
@@ -367,10 +378,14 @@ func (l *Live) Logs(ctx context.Context, r model.ActorRef, tail int) ([]model.Lo
 	for sc.Scan() {
 		line := sc.Text()
 		ts, rest, _ := strings.Cut(line, " ")
-		tt, _ := time.Parse(time.RFC3339Nano, ts)
+		tt, err := time.Parse(time.RFC3339Nano, ts)
+		// SinceTime is in whole seconds, so drop what precedes since.
+		if err != nil || tt.Before(since) {
+			continue
+		}
 		out = append(out, model.LogLine{Time: tt, Source: "worker", Text: rest})
 	}
-	return out, sc.Err()
+	return out, since, sc.Err()
 }
 
 // Suspend implements backend.Backend.

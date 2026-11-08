@@ -157,9 +157,11 @@ func run(ctx context.Context, cmd string, f flags, log *slog.Logger) error {
 		case token == "":
 			log.Info("console ready", "url", page, "mcp", page+"mcp")
 		case generated:
-			// The token goes in the fragment, which browsers never send to a
-			// server, so it stays out of logs and Referer headers.
-			log.Info("console ready; /mcp needs the token below", "url", page+"#token="+token, "mcp", page+"mcp", "token", token)
+			// The generated token goes to the terminal only, never through
+			// the logger, so it can't land in a log collector. In the link it
+			// sits in the fragment, which browsers never send to a server.
+			log.Info("console ready; /mcp needs the token printed below", "url", page, "mcp", page+"mcp")
+			fmt.Fprintf(os.Stderr, "\n  Open %s#token=%s\n  Token for MCP hosts: %s\n\n", page, token, token)
 		default:
 			log.Info("console ready; /mcp needs your token", "url", page, "mcp", page+"mcp")
 		}
@@ -193,6 +195,11 @@ func serveToken(f flags) (token string, generated bool, err error) {
 	}
 	if !f.auth && isLoopback(f.addr) {
 		return "", false, nil
+	}
+	// A generated token is only shown on the terminal. Without one there
+	// would be no safe place to print it.
+	if fi, err := os.Stderr.Stat(); err != nil || fi.Mode()&os.ModeCharDevice == 0 {
+		return "", false, errors.New("/mcp needs a token, and stderr isn't a terminal to show a generated one on: pass --auth-token-file or set SUBSTRATE_CONSOLE_TOKEN")
 	}
 	b := make([]byte, 24)
 	if _, err := rand.Read(b); err != nil {

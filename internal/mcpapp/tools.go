@@ -76,8 +76,10 @@ type ActorDetail struct {
 	Template *model.Template `json:"template,omitempty"`
 	Timeline []model.Event   `json:"timeline"`
 	Logs     []model.LogLine `json:"logs"`
-	Hint     string          `json:"hint,omitempty"`
-	Actions  []rules.Action  `json:"actions"`
+	// LogsSince is where the logs start: this actor's time on its worker.
+	LogsSince *time.Time     `json:"logsSince,omitempty"`
+	Hint      string         `json:"hint,omitempty"`
+	Actions   []rules.Action `json:"actions"`
 }
 
 // MetricResult is query_metric's result.
@@ -403,8 +405,11 @@ func (s *Server) getActor(ctx context.Context, _ *mcp.CallToolRequest, in ActorI
 	if d.Timeline, err = s.opts.Backend.Timeline(ctx, ref); err != nil {
 		d.Timeline = nil
 	}
-	if d.Logs, err = s.opts.Backend.Logs(ctx, ref, 5); err != nil {
+	var since time.Time
+	if d.Logs, since, err = s.opts.Backend.Logs(ctx, ref, 5); err != nil {
 		d.Logs = nil
+	} else if !since.IsZero() {
+		d.LogsSince = &since
 	}
 	if d.Timeline == nil {
 		d.Timeline = []model.Event{}
@@ -516,18 +521,21 @@ func (s *Server) actorLogs(ctx context.Context, _ *mcp.CallToolRequest, in LogsI
 		in.Tail = 50
 	}
 	ref := model.ActorRef{Atespace: in.Atespace, Name: in.Name}
-	lines, err := s.opts.Backend.Logs(ctx, ref, in.Tail)
+	lines, since, err := s.opts.Backend.Logs(ctx, ref, in.Tail)
 	if err != nil {
 		return nil, nil, err
 	}
 	var b strings.Builder
-	if len(lines) == 0 {
-		fmt.Fprintf(&b, "No log lines for %s.", ref)
+	switch {
+	case len(lines) == 0:
+		fmt.Fprintf(&b, "No log lines for %s since it started on its worker at %s.\n", ref, since.Format(time.RFC3339))
+	case !since.IsZero():
+		fmt.Fprintf(&b, "Worker log since %s started on it at %s. Earlier lines belong to whatever ran there before.\n", ref, since.Format(time.RFC3339))
 	}
 	for _, l := range lines {
 		fmt.Fprintf(&b, "%s %s: %s\n", l.Time.Format(time.RFC3339), l.Source, l.Text)
 	}
-	return &mcp.CallToolResult{Content: text(b.String())}, map[string]any{"kind": "logs", "actor": ref, "lines": lines}, nil
+	return &mcp.CallToolResult{Content: text(b.String())}, map[string]any{"kind": "logs", "actor": ref, "lines": lines, "since": since}, nil
 }
 
 func (s *Server) listPools(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {

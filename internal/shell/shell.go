@@ -20,7 +20,12 @@ func Handler(server *mcp.Server, shellHTML []byte, token string) http.Handler {
 	if token != "" {
 		mcpHandler = requireToken(token, mcpHandler)
 	}
-	mux.Handle("/mcp", sameOrigin(mcpHandler))
+	// Browsers on other origins can't drive the write tools through the
+	// user's browser. Requests without browser headers (MCP hosts, curl)
+	// pass. DNS rebinding against a loopback listener is handled inside
+	// the SDK's handler, which rejects non-loopback Host headers; keep its
+	// DisableLocalhostProtection off.
+	mux.Handle("/mcp", http.NewCrossOriginProtection().Handler(mcpHandler))
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
@@ -49,21 +54,4 @@ func requireToken(token string, next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
-}
-
-// sameOrigin rejects browser requests from other origins, so a web page the
-// user visits cannot drive the console's write tools through their browser.
-func sameOrigin(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if o := r.Header.Get("Origin"); o != "" && !sameHost(o, r.Host) {
-			http.Error(w, "cross-origin requests are not allowed", http.StatusForbidden)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-func sameHost(origin, host string) bool {
-	o := strings.TrimPrefix(strings.TrimPrefix(origin, "http://"), "https://")
-	return o == host
 }

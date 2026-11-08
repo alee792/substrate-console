@@ -1,6 +1,6 @@
 // Package backend defines what the console needs from a Substrate cluster.
-// The live implementation talks to ateapi and the Kubernetes API; the demo
-// implementation serves a fixed example cluster for development and tests.
+// The live implementation talks to ateapi and the Kubernetes API, of a real
+// cluster or of substrate-fake.
 package backend
 
 import (
@@ -22,8 +22,10 @@ type Backend interface {
 	// Timeline returns what the backend knows of an actor's history, newest
 	// first.
 	Timeline(ctx context.Context, ref model.ActorRef) ([]model.Event, error)
-	// Logs returns up to tail recent log lines for an actor, oldest first.
-	Logs(ctx context.Context, ref model.ActorRef, tail int) ([]model.LogLine, error)
+	// Logs returns up to tail recent log lines for an actor, oldest first,
+	// and the time they start from: lines before it may belong to whatever
+	// ran on the same worker earlier, so they are left out.
+	Logs(ctx context.Context, ref model.ActorRef, tail int) (lines []model.LogLine, since time.Time, err error)
 
 	Suspend(ctx context.Context, ref model.ActorRef) error
 	Resume(ctx context.Context, ref model.ActorRef) error

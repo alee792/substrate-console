@@ -3,6 +3,7 @@ package shell
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -23,13 +24,20 @@ func TestToken(t *testing.T) {
 		{"header", "/mcp", "Bearer " + tok, "", 0},
 		{"query", "/mcp?key=" + tok, "", "", 0},
 		{"other origin", "/mcp", "Bearer " + tok, "https://evil.example", http.StatusForbidden},
+		{"Sec-Fetch-Site cross-site", "/mcp", "Bearer " + tok, "fetch:cross-site", http.StatusForbidden},
 	}
 	for _, c := range cases {
-		r := httptest.NewRequest(http.MethodGet, c.target, nil)
+		method := http.MethodGet
+		if c.origin != "" {
+			method = http.MethodPost // cross-origin protection leaves safe methods alone
+		}
+		r := httptest.NewRequest(method, c.target, nil)
 		if c.auth != "" {
 			r.Header.Set("Authorization", c.auth)
 		}
-		if c.origin != "" {
+		if site, ok := strings.CutPrefix(c.origin, "fetch:"); ok {
+			r.Header.Set("Sec-Fetch-Site", site)
+		} else if c.origin != "" {
 			r.Header.Set("Origin", c.origin)
 		}
 		w := httptest.NewRecorder()

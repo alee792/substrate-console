@@ -75,6 +75,8 @@ export interface ActorDetail {
   kind: "actor"; actor: Actor; template?: Template;
   timeline: { time: string; state: ActorState; detail?: string }[];
   logs: { time: string; source: string; text: string; error?: boolean }[];
+  /** Logs start here: when this actor started on its worker. */
+  logsSince?: string;
   hint?: string; actions: Action[];
 }
 

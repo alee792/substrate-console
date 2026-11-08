@@ -301,3 +301,21 @@ func TestTemplateVersionFlow(t *testing.T) {
 		t.Errorf("new actor = %v", got["actor"])
 	}
 }
+
+// A worker's log holds whatever ran there before; an actor's logs start
+// when it arrived.
+func TestActorLogsLeaveOutTheWorkersEarlierActors(t *testing.T) {
+	cs := connect(t, false)
+	d, _ := call(t, cs, "get_actor", map[string]any{"atespace": "triage", "name": "triage-7f3a"})
+	b, _ := json.Marshal(d["logs"])
+	if !strings.Contains(string(b), "waiting for input") || strings.Contains(string(b), "212 alerts") {
+		t.Errorf("logs = %s", b)
+	}
+	if d["logsSince"] == nil {
+		t.Error("no logsSince")
+	}
+	_, txt := call(t, cs, "actor_logs", map[string]any{"atespace": "triage", "name": "triage-7f3a"})
+	if strings.Contains(txt, "212 alerts") || !strings.Contains(txt, "Earlier lines belong to whatever ran there before") {
+		t.Errorf("actor_logs text = %q", txt)
+	}
+}
