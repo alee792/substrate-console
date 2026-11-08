@@ -4,7 +4,6 @@ go 1.27.0
 
 require (
 	github.com/alee792/substrate-fake v0.0.0-20261108144907-e815ba6f680c
-	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/go-jose/go-jose/v4 v4.1.9
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	go.ate.dev/substrate v1.0.0

@@ -155,7 +155,7 @@ export function StatusPage({ st, nav }: { st: Status; nav: Nav }) {
         {st.access?.principal && (
           <p class="note">
             Reading as <span class="mono">{st.access.principal}</span>
-            {st.access.shared && ", the shared account kubectl ate uses. Anyone with this console has cluster owner."}
+            {st.access.shared && ", the shared account kubectl ate uses. Anyone with this console has cluster owner. Start it with --service-account to act as yourself."}
           </p>
         )}
       </div>

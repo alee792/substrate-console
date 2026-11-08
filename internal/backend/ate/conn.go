@@ -93,7 +93,7 @@ func loadKubeConfig(path, kubeContext string) (*rest.Config, error) {
 // dial connects to ateapi. With an empty endpoint it port-forwards to the
 // api Service. It returns the connection, its credentials and a func that
 // tears it down.
-func dial(ctx context.Context, rc *rest.Config, cs *kubernetes.Clientset, cfg Config) (*grpc.ClientConn, callerCreds, func(), error) {
+func dial(ctx context.Context, rc *rest.Config, cs kubernetes.Interface, cfg Config) (*grpc.ClientConn, callerCreds, func(), error) {
 	stop := func() {}
 	endpoint := cfg.Endpoint
 	if endpoint == "" {
@@ -128,7 +128,7 @@ func dial(ctx context.Context, rc *rest.Config, cs *kubernetes.Clientset, cfg Co
 
 // serverTLSConfig trusts the live servicedns ClusterTrustBundle. It tries
 // the v1 API, then v1beta1 for older clusters.
-func serverTLSConfig(ctx context.Context, cs *kubernetes.Clientset, serverName string) (*tls.Config, error) {
+func serverTLSConfig(ctx context.Context, cs kubernetes.Interface, serverName string) (*tls.Config, error) {
 	opts := metav1.ListOptions{LabelSelector: liveBundleSelector}
 	var bundles []certsv1.ClusterTrustBundle
 	list, err := cs.CertificatesV1().ClusterTrustBundles().List(ctx, opts)
@@ -163,11 +163,12 @@ func serverTLSConfig(ctx context.Context, cs *kubernetes.Clientset, serverName s
 }
 
 // ownToken returns the console's own ateapi token: tokenCommand's output,
-// tokenFile ("-" for stdin), or a minted ate-client ServiceAccount token, as
-// kubectl-ate does. The minted token authenticates as that shared
-// ServiceAccount, not as the person running the console. Forward mode has
-// no own token: every call carries the caller's.
-func ownToken(ctx context.Context, cs *kubernetes.Clientset, cfg Config) (func(context.Context) (string, error), error) {
+// tokenFile ("-" for stdin), a minted token for the person's own
+// ServiceAccount, or else a minted ate-client token, as kubectl-ate does.
+// The ate-client token authenticates as that shared owner account, not as
+// the person running the console. Forward mode has no own token: every
+// call carries the caller's.
+func ownToken(ctx context.Context, cs kubernetes.Interface, cfg Config) (func(context.Context) (string, error), error) {
 	switch {
 	case cfg.Forward:
 		return nil, nil
@@ -191,24 +192,41 @@ func ownToken(ctx context.Context, cs *kubernetes.Clientset, cfg Config) (func(c
 			return strings.TrimSpace(string(b)), nil
 		}, nil
 	}
+	ns, name, ttl := namespace(), clientAccount(), int64(3600)
+	if cfg.ServiceAccount != "" {
+		ns, name, _ = strings.Cut(cfg.ServiceAccount, "/")
+		// Short-lived, since it's the person's own access; refreshed a
+		// minute before it expires. Kubernetes' minimum is ten minutes.
+		ttl = 900
+	}
 	mint := &cachedToken{fetch: func(ctx context.Context) (string, error) {
-		exp := int64(3600)
-		tok, err := cs.CoreV1().ServiceAccounts(namespace()).CreateToken(ctx, clientAccount(), &authv1.TokenRequest{
-			Spec: authv1.TokenRequestSpec{Audiences: []string{apiServerName()}, ExpirationSeconds: &exp},
-		}, metav1.CreateOptions{})
-		if err != nil {
-			return "", fmt.Errorf("request ateapi token: %w", err)
-		}
-		if tok.Status.Token == "" {
-			return "", fmt.Errorf("request ateapi token: empty response")
-		}
-		return tok.Status.Token, nil
+		return mintToken(ctx, cs, ns, name, ttl)
 	}}
-	// Mint once up front so a cluster without Substrate fails at start.
+	// Mint once up front so a cluster without Substrate, or a kubeconfig
+	// that may not act as the ServiceAccount, fails at start.
 	if _, err := mint.get(ctx); err != nil {
 		return nil, err
 	}
 	return mint.get, nil
+}
+
+// mintToken asks Kubernetes for an ateapi token for a ServiceAccount, with
+// the kubeconfig's own credentials.
+func mintToken(ctx context.Context, cs kubernetes.Interface, ns, name string, ttl int64) (string, error) {
+	tok, err := cs.CoreV1().ServiceAccounts(ns).CreateToken(ctx, name, &authv1.TokenRequest{
+		Spec: authv1.TokenRequestSpec{Audiences: []string{apiServerName()}, ExpirationSeconds: &ttl},
+	}, metav1.CreateOptions{})
+	switch {
+	case apierrors.IsForbidden(err):
+		return "", fmt.Errorf("your Kubernetes account may not get tokens for ServiceAccount %s/%s; it needs create on serviceaccounts/token for it: %w", ns, name, err)
+	case apierrors.IsNotFound(err):
+		return "", fmt.Errorf("ServiceAccount %s/%s doesn't exist: %w", ns, name, err)
+	case err != nil:
+		return "", fmt.Errorf("request ateapi token for %s/%s: %w", ns, name, err)
+	case tok.Status.Token == "":
+		return "", fmt.Errorf("request ateapi token for %s/%s: empty response", ns, name)
+	}
+	return tok.Status.Token, nil
 }
 
 // runTokenCommand runs a command such as `gcloud auth print-identity-token`

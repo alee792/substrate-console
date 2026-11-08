@@ -37,8 +37,14 @@ type Config struct {
 	// Endpoint is an ateapi address. Empty means port-forward to the api
 	// Service, as kubectl-ate does.
 	Endpoint string
+	// ServiceAccount ("namespace/name") is the person's own ServiceAccount.
+	// The console asks Kubernetes, with the kubeconfig's credentials, for
+	// short-lived ateapi tokens for it, so Kubernetes RBAC decides who may
+	// act as whom and ateapi's policies decide what that account may do.
+	ServiceAccount string
 	// TokenFile and TokenCommand give the console's own ateapi token. With
-	// neither, it mints one for the shared ate-client ServiceAccount.
+	// none of the three, it mints one for the shared ate-client
+	// ServiceAccount, as kubectl-ate does.
 	TokenFile    string
 	TokenCommand string
 	// Forward makes every call use the caller's token from the context

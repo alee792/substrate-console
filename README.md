@@ -42,7 +42,8 @@ bin/substrate-console serve --context kind-dev --prometheus-url http://localhost
 | `--read-only` | Register only the read tools. |
 | `--kubeconfig`, `--context` | Which cluster. |
 | `--endpoint` | Dial ateapi directly instead of port-forwarding. |
-| `--token-file` | The console's ateapi token, from a file reread on every call (`-` for stdin), instead of minting one for ate-client. |
+| `--service-account` | `namespace/name` of your own ServiceAccount (or set `ATE_SERVICE_ACCOUNT`). The console uses your kubeconfig to get short-lived ateapi tokens for it, instead of for ate-client. |
+| `--token-file` | The console's ateapi token, from a file reread on every call (`-` for stdin). |
 | `--token-command` | A command that prints the console's ateapi token, rerun shortly before it expires. |
 | `--atespaces` | Atespaces to show people who can't list atespaces, comma-separated. |
 | `--prometheus-url` | Enables vitals history, baselines and `query_metric`. |
@@ -50,7 +51,6 @@ bin/substrate-console serve --context kind-dev --prometheus-url http://localhost
 | `--auth` | Require a token on `/mcp`. On by default when `--addr` isn't loopback. |
 | `--auth-token-file` | The token `/mcp` requires (or set `SUBSTRATE_CONSOLE_TOKEN`). Without either, `--auth` generates one. |
 | `--forward-token` | `serve`: act as each caller. `/mcp` requires the caller's own ateapi token and sends it on. |
-| `--oidc-issuer`, `--url`, `--oidc-audience` | `serve`: accept only tokens from this issuer, for this audience (default `--url`), and publish OAuth metadata so MCP hosts can sign people in. Implies `--forward-token`. |
 | `--no-web-fonts` | Don't load Geist from Google Fonts; use system fonts. |
 
 ## Connecting an assistant
@@ -75,9 +75,9 @@ Substrate doesn't use Kubernetes RBAC to decide who may do what. ateapi takes a 
 
 By default the console mints a token for the shared `ate-client` ServiceAccount, as `kubectl ate` does. `ate-setup` makes that account a cluster owner, so anyone using the console is one too. The overview says so at the bottom. On a cluster only you use, that's fine. Otherwise:
 
-- **Just you, as yourself.** `--token-file` or `--token-command` with your own token, for example `--token-command 'kubectl create token -n ate-users alice --audience api.ate-system.svc'` or `'gcloud auth print-identity-token'` with the Google provider.
-- **Shared, as each caller.** `serve --forward-token` makes `/mcp` require each caller's own ateapi token and send it to ateapi on every call. The console never falls back to its own identity. A caller who can't list atespaces sees the ones named with `--atespaces` (and any atespace a tool call names) that they can read. A caller who can't list workers doesn't see workers, pools, capacity or pool-wide metrics, since the console reads those with its own credentials. Logs are read only after the caller's own `GetActor` succeeds. Writes are checked by ateapi; a refused one says what you can't do.
-- **Shared, with sign-in.** Add `--oidc-issuer <issuer> --url https://console.example.com/mcp`. `/mcp` becomes an OAuth resource server under the MCP authorization spec: it serves protected resource metadata at `/.well-known/oauth-protected-resource/mcp` naming the issuer, and checks each token's issuer, audience and expiry before forwarding it. The MCP host signs the person in with the issuer; the console runs no login flow. ateapi must trust the same issuer with the console's URL as an audience. The issuer has to let hosts register (dynamic client registration or client ID metadata documents) and issue JWT access tokens; Okta, Auth0, Keycloak and WorkOS can, Google can't. Because ateapi accepts the console's audience, those tokens also work against ateapi directly. Token exchange to an ateapi-only audience would avoid that, but few providers support it. This mode is tested against the fake's issuer only, not yet with Claude or ChatGPT signing someone in.
+- **Just you, as yourself.** `--service-account ate-users/alice`. The console asks Kubernetes, with your kubeconfig, for a 15-minute ateapi token for that ServiceAccount and renews it before it expires. Kubernetes RBAC decides who may get tokens for which ServiceAccount (`create` on `serviceaccounts/token`), and ateapi's access policies decide what the account may do. This works the same in the web page and when an MCP host runs the console on your machine. If ateapi trusts your own identity provider, pass its token instead with `--token-command` (for example `gcloud auth print-identity-token`) or `--token-file`.
+- **Shared, as each caller.** `serve --forward-token` makes `/mcp` require each caller's own ateapi token and send it to ateapi on every call. The console never falls back to its own identity. A caller who can't list atespaces sees the ones named with `--atespaces` (and any atespace a tool call names) that they can read. A caller who can't list workers doesn't see workers, pools, capacity or pool-wide metrics, since the console reads those with its own credentials. Logs need cluster-wide viewer access, since the console reads pods with its own credentials. Writes are checked by ateapi; a refused one says what you can't do.
+- **Remote connectors** (claude.ai or ChatGPT calling the console over the internet) aren't supported yet. Those hosts have no kubeconfig and can only send a token from an identity provider. The plan is for the console to check that sign-in and then get a Kubernetes token for the person's ServiceAccount itself, so the outside token never reaches ateapi.
 
 `serve --demo --forward-token` prints tokens for three demo people: the ate-client owner, a global viewer, and an editor of `triage` only.
 
@@ -155,7 +155,7 @@ The live backend is written against Substrate v1.0.0's API and has been checked 
 
 Access: dry runs don't know what you're allowed to do, so a dry run can succeed where the real call is refused. Reading your own role from `GetAtespaceAccessPolicy` would fix that. Groups aren't supported by Substrate yet.
 
-Also not done yet: a full actor timeline (needs state-change events from Substrate), logs for actors that aren't running, and sign-in through Claude or ChatGPT tried end to end. The view bundle is about 400 KiB (110 KiB gzipped). Most of that is the MCP SDK and zod. The build drops zod's non-English error locales.
+Also not done yet: a full actor timeline (needs state-change events from Substrate), logs for actors that aren't running, and remote connectors (claude.ai, ChatGPT). The view bundle is about 400 KiB (110 KiB gzipped). Most of that is the MCP SDK and zod. The build drops zod's non-English error locales.
 
 ## License
 

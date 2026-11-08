@@ -16,9 +16,9 @@ type Auth struct {
 	// Token is a shared secret /mcp requires (see requireToken). Everyone
 	// who has it acts as the console's own identity.
 	Token string
-	// Caller, when set, makes /mcp act as each caller instead, and Token is
-	// ignored.
-	Caller *CallerAuth
+	// Forward makes /mcp act as each caller instead: it requires their own
+	// ateapi token and sends it on. Token is then ignored.
+	Forward bool
 }
 
 // Handler returns the HTTP handler for the shell and the MCP endpoint. The
@@ -28,12 +28,8 @@ func Handler(server *mcp.Server, shellHTML []byte, a Auth) http.Handler {
 	mux := http.NewServeMux()
 	var mcpHandler http.Handler = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
 	switch {
-	case a.Caller != nil:
-		mcpHandler = a.Caller.middleware()(mcpHandler)
-		if a.Caller.withMetadata() {
-			mux.Handle("GET "+metadataPath, a.Caller.metadata())
-			mux.Handle("OPTIONS "+metadataPath, a.Caller.metadata())
-		}
+	case a.Forward:
+		mcpHandler = forwardCaller(mcpHandler)
 	case a.Token != "":
 		mcpHandler = requireToken(a.Token, mcpHandler)
 	}

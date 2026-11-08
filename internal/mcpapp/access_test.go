@@ -2,8 +2,6 @@ package mcpapp_test
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -30,7 +28,7 @@ type served struct {
 	url  string
 }
 
-func serveForward(t *testing.T, caller func(*substratefake.Cluster) *shell.CallerAuth) *served {
+func serveForward(t *testing.T) *served {
 	t.Helper()
 	ctx := context.Background()
 	fc, err := substratefake.Start(ctx, substratefake.Options{Scenario: substratefake.Demo})
@@ -46,7 +44,7 @@ func serveForward(t *testing.T, caller func(*substratefake.Cluster) *shell.Calle
 	t.Cleanup(live.Close)
 	// The default cache, so a test catches one caller's view served to another.
 	app := mcpapp.New(mcpapp.Options{Backend: live, Metrics: metrics.NewPrometheus(fc.PrometheusURL), ViewHTML: []byte("<!doctype html>")})
-	hs := httptest.NewServer(shell.Handler(app.MCP(), nil, shell.Auth{Caller: caller(fc)}))
+	hs := httptest.NewServer(shell.Handler(app.MCP(), nil, shell.Auth{Forward: true}))
 	t.Cleanup(hs.Close)
 	return &served{fake: fc, url: hs.URL + "/mcp"}
 }
@@ -115,7 +113,7 @@ func atespacesOf(st map[string]any) []string {
 }
 
 func TestForwardActsAsEachCaller(t *testing.T) {
-	s := serveForward(t, func(*substratefake.Cluster) *shell.CallerAuth { return &shell.CallerAuth{} })
+	s := serveForward(t)
 
 	if _, err := s.as(t, ""); err == nil {
 		t.Fatal("connected without a token")
@@ -220,64 +218,10 @@ func TestForwardActsAsEachCaller(t *testing.T) {
 	}
 }
 
-// With an issuer, /mcp is an OAuth resource server: it publishes metadata
-// naming the issuer and accepts only that issuer's tokens for its own
-// audience, which ateapi trusts too.
-func TestOIDC(t *testing.T) {
-	var resource string
-	s := serveForward(t, func(fc *substratefake.Cluster) *shell.CallerAuth {
-		roots := x509.NewCertPool()
-		roots.AppendCertsFromPEM(fc.CAPEM)
-		client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots}}}
-		resource = "https://console.example.com/mcp"
-		v, err := shell.NewOIDCVerifier(context.Background(), fc.World.Issuer(), resource, client)
-		if err != nil {
-			t.Fatal(err)
-		}
-		fc.World.TrustAudience(resource)
-		return &shell.CallerAuth{Verifier: v, Resource: resource, Issuer: fc.World.Issuer()}
-	})
-
-	// A token for ateapi's own audience isn't for the console.
-	r, _ := http.NewRequest("POST", s.url, strings.NewReader("{}"))
-	r.Header.Set("Authorization", "Bearer "+s.token(substratefake.DemoOnCall))
-	resp, err := http.DefaultClient.Do(r)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized || !strings.Contains(resp.Header.Get("WWW-Authenticate"), `resource_metadata="https://console.example.com/.well-known/oauth-protected-resource/mcp"`) {
-		t.Errorf("wrong-audience token: %d, WWW-Authenticate %q", resp.StatusCode, resp.Header.Get("WWW-Authenticate"))
-	}
-
-	meta, err := http.Get(strings.TrimSuffix(s.url, "/mcp") + "/.well-known/oauth-protected-resource/mcp")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer meta.Body.Close()
-	var prm struct {
-		Resource             string   `json:"resource"`
-		AuthorizationServers []string `json:"authorization_servers"`
-	}
-	_ = json.NewDecoder(meta.Body).Decode(&prm)
-	if prm.Resource != resource || !slices.Equal(prm.AuthorizationServers, []string{s.fake.World.Issuer()}) {
-		t.Errorf("metadata %+v", prm)
-	}
-
-	tok := s.fake.World.IssueToken(substratefake.DemoTriageDev, substratefake.TokenOptions{Audience: resource})
-	dev, err := s.as(t, tok)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if st, _ := call(t, dev, "status", nil); !slices.Equal(atespacesOf(st), []string{"triage"}) {
-		t.Errorf("signed-in editor sees %v", atespacesOf(st))
-	}
-}
-
 // A problem the person resolved stays resolved when their token rotates:
 // history is kept per principal, snapshots per token.
 func TestResolvedSurvivesTokenRotation(t *testing.T) {
-	s := serveForward(t, func(*substratefake.Cluster) *shell.CallerAuth { return &shell.CallerAuth{} })
+	s := serveForward(t)
 	dev, err := s.as(t, s.token(substratefake.DemoTriageDev))
 	if err != nil {
 		t.Fatal(err)

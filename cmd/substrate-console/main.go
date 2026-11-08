@@ -47,11 +47,10 @@ Flags:
 type flags struct {
 	demo, readOnly                    bool
 	kubeconfig, kubeContext, endpoint string
-	tokenFile, tokenCommand           string
+	tokenFile, tokenCommand, sa       string
 	prometheusURL, addr, atespaces    string
 	noFonts, auth, forward            bool
 	authTokenFile                     string
-	oidcIssuer, oidcAudience, url     string
 }
 
 func main() {
@@ -92,7 +91,8 @@ func newFlagSet(name string, f *flags) *flag.FlagSet {
 	fs.StringVar(&f.kubeconfig, "kubeconfig", "", "path to the kubeconfig (default: the usual kubectl rules)")
 	fs.StringVar(&f.kubeContext, "context", "", "kubeconfig context to use")
 	fs.StringVar(&f.endpoint, "endpoint", "", "ateapi address; default is a port-forward to the api Service, as kubectl ate does")
-	fs.StringVar(&f.tokenFile, "token-file", "", "file holding the console's ateapi bearer token, reread on every call; default mints a token for the shared ate-client ServiceAccount")
+	fs.StringVar(&f.sa, "service-account", os.Getenv("ATE_SERVICE_ACCOUNT"), "namespace/name of your own ServiceAccount; the console uses your kubeconfig to get short-lived ateapi tokens for it (default $ATE_SERVICE_ACCOUNT, else the shared ate-client owner account)")
+	fs.StringVar(&f.tokenFile, "token-file", "", "file holding the console's ateapi bearer token, reread on every call")
 	fs.StringVar(&f.tokenCommand, "token-command", "", "command that prints the console's ateapi token, rerun when it expires, e.g. 'gcloud auth print-identity-token'")
 	fs.StringVar(&f.atespaces, "atespaces", "", "comma-separated atespaces to show people who can't list atespaces")
 	fs.StringVar(&f.prometheusURL, "prometheus-url", "", "Prometheus base URL for vitals and charts, e.g. http://localhost:9090")
@@ -100,9 +100,6 @@ func newFlagSet(name string, f *flags) *flag.FlagSet {
 	fs.BoolVar(&f.auth, "auth", false, "serve: require a token on /mcp (on by default beyond loopback); generates one unless --auth-token-file or $SUBSTRATE_CONSOLE_TOKEN sets it")
 	fs.StringVar(&f.authTokenFile, "auth-token-file", "", "serve: file holding the token /mcp requires; implies --auth")
 	fs.BoolVar(&f.forward, "forward-token", false, "serve: act as each caller: /mcp requires the caller's own ateapi token and sends it to ateapi, so Substrate's access policies decide what they see")
-	fs.StringVar(&f.oidcIssuer, "oidc-issuer", "", "serve: identity provider whose tokens /mcp accepts, verified before they're forwarded; MCP hosts sign people in with it. Implies --forward-token")
-	fs.StringVar(&f.oidcAudience, "oidc-audience", "", "serve: audience the tokens must carry (default: --url)")
-	fs.StringVar(&f.url, "url", "", "serve: the public URL of /mcp, e.g. https://console.example.com/mcp; needed with --oidc-issuer")
 	fs.BoolVar(&f.noFonts, "no-web-fonts", false, "use host and system fonts only, so the view's CSP allows no external origins")
 	return fs
 }
@@ -146,14 +143,13 @@ func run(ctx context.Context, cmd string, f flags, log *slog.Logger) error {
 			fmt.Fprintln(os.Stderr)
 		}
 	}
-	callerAuth, err := callerAuth(ctx, cmd, &f)
-	if err != nil {
+	if err := checkIdentity(cmd, f); err != nil {
 		return err
 	}
 	{
 		live, err := ate.New(ctx, ate.Config{
 			Kubeconfig: f.kubeconfig, Context: f.kubeContext, Endpoint: f.endpoint,
-			TokenFile: f.tokenFile, TokenCommand: f.tokenCommand, Forward: callerAuth != nil,
+			ServiceAccount: f.sa, TokenFile: f.tokenFile, TokenCommand: f.tokenCommand, Forward: f.forward,
 			Atespaces: splitList(f.atespaces),
 		})
 		if err != nil {
@@ -180,12 +176,13 @@ func run(ctx context.Context, cmd string, f flags, log *slog.Logger) error {
 	case "serve":
 		var token string
 		var generated bool
-		if callerAuth == nil {
+		var err error
+		if !f.forward {
 			if token, generated, err = serveToken(f); err != nil {
 				return err
 			}
 		}
-		srv := &http.Server{Addr: f.addr, Handler: shell.Handler(app.MCP(), web.ShellHTML, shell.Auth{Token: token, Caller: callerAuth}), ReadHeaderTimeout: 10 * time.Second}
+		srv := &http.Server{Addr: f.addr, Handler: shell.Handler(app.MCP(), web.ShellHTML, shell.Auth{Token: token, Forward: f.forward}), ReadHeaderTimeout: 10 * time.Second}
 		go func() {
 			<-ctx.Done()
 			sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -194,9 +191,7 @@ func run(ctx context.Context, cmd string, f flags, log *slog.Logger) error {
 		}()
 		page := "http://" + f.addr + "/"
 		switch {
-		case callerAuth != nil && callerAuth.Issuer != "":
-			log.Info("console ready; /mcp acts as each caller, signed in with "+callerAuth.Issuer, "url", page, "mcp", callerAuth.Resource)
-		case callerAuth != nil:
+		case f.forward:
 			log.Info("console ready; /mcp acts as each caller and needs their own ateapi token", "url", page, "mcp", page+"mcp")
 		case token == "":
 			log.Info("console ready", "url", page, "mcp", page+"mcp")
@@ -217,38 +212,33 @@ func run(ctx context.Context, cmd string, f flags, log *slog.Logger) error {
 	return nil
 }
 
-// callerAuth returns how /mcp acts as each caller, or nil when the console
-// acts as itself.
-func callerAuth(ctx context.Context, cmd string, f *flags) (*shell.CallerAuth, error) {
-	if f.oidcIssuer != "" {
-		f.forward = true
+// checkIdentity rejects flag combinations that disagree about whose token
+// the console sends.
+func checkIdentity(cmd string, f flags) error {
+	own := 0
+	for _, set := range []bool{f.sa != "", f.tokenFile != "", f.tokenCommand != ""} {
+		if set {
+			own++
+		}
+	}
+	if own > 1 {
+		return errors.New("pick one of --service-account, --token-file and --token-command")
+	}
+	if f.sa != "" {
+		if ns, name, ok := strings.Cut(f.sa, "/"); !ok || ns == "" || name == "" || strings.Contains(name, "/") {
+			return fmt.Errorf("--service-account %q: want namespace/name, e.g. ate-users/alice", f.sa)
+		}
 	}
 	if !f.forward {
-		return nil, nil
+		return nil
 	}
 	if cmd != "serve" {
-		return nil, errors.New("--forward-token and --oidc-issuer are for serve; over stdio the console has one user, so pass --token-file or --token-command")
+		return errors.New("--forward-token is for serve; over stdio the console has one user, so pass --service-account, --token-file or --token-command")
 	}
-	if f.tokenFile != "" || f.tokenCommand != "" {
-		return nil, errors.New("--forward-token never uses the console's own token, so leave out --token-file and --token-command")
+	if own > 0 {
+		return errors.New("--forward-token never uses the console's own token, so leave out --service-account, --token-file and --token-command")
 	}
-	a := &shell.CallerAuth{}
-	if f.oidcIssuer == "" {
-		return a, nil
-	}
-	if f.url == "" {
-		return nil, errors.New("--oidc-issuer needs --url, the public URL of /mcp, which hosts send tokens for")
-	}
-	aud := f.oidcAudience
-	if aud == "" {
-		aud = f.url
-	}
-	v, err := shell.NewOIDCVerifier(ctx, f.oidcIssuer, aud, nil)
-	if err != nil {
-		return nil, err
-	}
-	a.Verifier, a.Resource, a.Issuer = v, f.url, f.oidcIssuer
-	return a, nil
+	return nil
 }
 
 func splitList(s string) []string {
