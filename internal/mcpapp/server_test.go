@@ -19,6 +19,12 @@ import (
 // live backend: ateapi over TLS, the Kubernetes API and Prometheus.
 func connect(t *testing.T, readOnly bool) *mcp.ClientSession {
 	t.Helper()
+	cs, _ := connectFake(t, readOnly)
+	return cs
+}
+
+func connectFake(t *testing.T, readOnly bool) (*mcp.ClientSession, *substratefake.Cluster) {
+	t.Helper()
 	ctx := context.Background()
 	fc, err := substratefake.Start(ctx, substratefake.Options{Scenario: substratefake.Demo})
 	if err != nil {
@@ -41,7 +47,7 @@ func connect(t *testing.T, readOnly bool) *mcp.ClientSession {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { cs.Close() })
-	return cs
+	return cs, fc
 }
 
 func call(t *testing.T, cs *mcp.ClientSession, name string, args map[string]any) (map[string]any, string) {
@@ -305,7 +311,10 @@ func TestTemplateVersionFlow(t *testing.T) {
 // A worker's log holds whatever ran there before; an actor's logs start
 // when it arrived.
 func TestActorLogsLeaveOutTheWorkersEarlierActors(t *testing.T) {
-	cs := connect(t, false)
+	cs, fc := connectFake(t, false)
+	// A later write, such as a snapshot report, moves update_time but not
+	// when the actor arrived.
+	fc.World.Touch("triage", "triage-7f3a")
 	d, _ := call(t, cs, "get_actor", map[string]any{"atespace": "triage", "name": "triage-7f3a"})
 	b, _ := json.Marshal(d["logs"])
 	if !strings.Contains(string(b), "waiting for input") || strings.Contains(string(b), "212 alerts") {

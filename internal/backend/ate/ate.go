@@ -117,8 +117,10 @@ func convertActor(a *ateapi.Actor, now time.Time) model.Actor {
 	if out.State == "" {
 		out.State = model.StateUnknown
 	}
-	// ateapi doesn't record when the state began; the last update to the
-	// record is the closest it has, since a transition writes the record.
+	// ateapi doesn't record when the state began. update_time is the last
+	// write, which a transition makes but so do snapshot reports and tags, so
+	// it can be later than the state's start. Logs and Timeline use the
+	// worker assignment for a running actor instead.
 	out.StateSince = t(md.GetUpdateTime())
 	if wa := st.GetWorkerAssignment(); wa != nil {
 		w := wa.GetWorker().GetName()
@@ -330,6 +332,11 @@ func (l *Live) Timeline(ctx context.Context, r model.ActorRef) ([]model.Event, e
 		return nil, err
 	}
 	ma := convertActor(a, time.Now())
+	if ma.State == model.StateRunning {
+		if at, err := l.boundAt(ctx, a); err == nil {
+			ma.StateSince = &at
+		}
+	}
 	var ev []model.Event
 	if ma.StateSince != nil {
 		e := model.Event{Time: *ma.StateSince, State: ma.State}
@@ -348,10 +355,9 @@ func (l *Live) Timeline(ctx context.Context, r model.ActorRef) ([]model.Event, e
 // `kubectl ate logs` does. It only works while the actor runs.
 //
 // A worker hosts actors one after another, so its log holds whatever ran
-// there before this actor. Lines are read from the start of the current
-// assignment, which ateapi only records as the actor's last update: the
-// resume that put it on this worker, or a later write. A later write cuts
-// lines that are the actor's, which is the safe way to be wrong.
+// there before this actor. Lines are read from when the actor was bound to
+// the worker, which is its ActorAssignment's create time. update_time won't
+// do: ateapi bumps it on every write, snapshot reports included.
 func (l *Live) Logs(ctx context.Context, r model.ActorRef, tail int) ([]model.LogLine, time.Time, error) {
 	a, err := l.api.GetActor(ctx, &ateapi.GetActorRequest{Actor: ref(r)})
 	if err != nil {
@@ -361,9 +367,9 @@ func (l *Live) Logs(ctx context.Context, r model.ActorRef, tail int) ([]model.Lo
 	if a.GetStatus().GetState() != ateapi.ActorState_ACTOR_STATE_RUNNING || wa.GetWorkerPod() == "" {
 		return nil, time.Time{}, fmt.Errorf("%s is not running, and logs of past runs need a log backend", r)
 	}
-	since := a.GetMetadata().GetUpdateTime().AsTime()
-	if !a.GetMetadata().GetUpdateTime().IsValid() {
-		return nil, time.Time{}, fmt.Errorf("%s has no update time, so its lines can't be told from the worker's earlier output", r)
+	since, err := l.boundAt(ctx, a)
+	if err != nil {
+		return nil, time.Time{}, err
 	}
 	n := int64(tail)
 	st := metav1.NewTime(since)
@@ -386,6 +392,30 @@ func (l *Live) Logs(ctx context.Context, r model.ActorRef, tail int) ([]model.Lo
 		out = append(out, model.LogLine{Time: tt, Source: "worker", Text: rest})
 	}
 	return out, since, sc.Err()
+}
+
+// boundAt is when a's current assignment was made: the resume that put it
+// on its worker.
+func (l *Live) boundAt(ctx context.Context, a *ateapi.Actor) (time.Time, error) {
+	worker := a.GetStatus().GetWorkerAssignment().GetWorker()
+	if worker.GetName() == "" {
+		return time.Time{}, fmt.Errorf("%s/%s has no worker", a.GetMetadata().GetAtespace(), a.GetMetadata().GetName())
+	}
+	var token string
+	for {
+		r, err := l.api.ListWorkerActorAssignments(ctx, &ateapi.ListWorkerActorAssignmentsRequest{Worker: worker, Options: &ateapi.ListOptions{PageSize: 500, PageToken: token}})
+		if err != nil {
+			return time.Time{}, fmt.Errorf("list assignments on %s: %w", worker.GetName(), err)
+		}
+		for _, as := range r.GetActorAssignments() {
+			if as.GetActorUid() == a.GetMetadata().GetUid() && as.GetMetadata().GetCreateTime().IsValid() {
+				return as.GetMetadata().GetCreateTime().AsTime(), nil
+			}
+		}
+		if token = r.GetNextPageToken(); token == "" {
+			return time.Time{}, fmt.Errorf("%s/%s has no assignment on %s", a.GetMetadata().GetAtespace(), a.GetMetadata().GetName(), worker.GetName())
+		}
+	}
 }
 
 // Suspend implements backend.Backend.

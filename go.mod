@@ -3,7 +3,7 @@ module github.com/alee792/substrate-console
 go 1.27.0
 
 require (
-	github.com/alee792/substrate-fake v0.0.0-20261108074354-dc46f6e19346
+	github.com/alee792/substrate-fake v0.0.0-20261108144126-70ef3613ebfd
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	go.ate.dev/substrate v1.0.0
 	google.golang.org/grpc v1.85.0
