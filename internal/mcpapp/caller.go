@@ -5,11 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/alee792/substrate-console/internal/backend"
 	"github.com/alee792/substrate-console/internal/model"
@@ -120,6 +123,9 @@ func (s *Server) snapshot(ctx context.Context) (*model.Cluster, error) {
 	}
 	c, err := s.opts.Backend.Snapshot(ctx)
 	if err != nil {
+		if status.Code(err) == codes.Unauthenticated {
+			return nil, errors.New("ateapi didn't accept your token; it may have expired")
+		}
 		return nil, fmt.Errorf("read cluster: %w", err)
 	}
 	if s.opts.CacheFor > 0 {

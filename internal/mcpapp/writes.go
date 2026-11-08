@@ -173,6 +173,9 @@ func (s *Server) drain(ctx context.Context, _ *mcp.CallToolRequest, in DrainIn) 
 			found = true
 		}
 	}
+	if !found && !c.Access.Workers {
+		return nil, nil, fmt.Errorf("draining workers needs cluster-wide owner access, which %s doesn't have", orYou(c.Access.Principal))
+	}
 	if !found {
 		return nil, nil, fmt.Errorf("worker %q not found; use pool/worker as list_worker_pools shows it", in.Worker)
 	}
