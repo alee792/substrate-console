@@ -212,7 +212,10 @@ func run(ctx context.Context, cmd string, f flags, log *slog.Logger) error {
 			log.Info("console ready; /mcp needs the token printed below", "url", page, "mcp", page+"mcp")
 			fmt.Fprintf(os.Stderr, "\n  Open %s#token=%s\n  Token for MCP hosts: %s\n", page, token, token)
 			if publicHost != "" {
-				fmt.Fprintf(os.Stderr, "  Connector URL: %s/mcp?key=%s\n", strings.TrimSuffix(f.publicURL, "/"), token)
+				// The header keeps the token out of the tunnel's access logs;
+				// the query form is for hosts that take only a URL.
+				mcpURL := strings.TrimSuffix(f.publicURL, "/") + "/mcp"
+				fmt.Fprintf(os.Stderr, "  Connector URL:    %s\n  with header:      Authorization: Bearer %s\n  or, URL only:     %s?key=%s\n", mcpURL, token, mcpURL, token)
 			}
 			fmt.Fprintln(os.Stderr)
 		default:
@@ -242,6 +245,12 @@ func checkIdentity(cmd string, f flags) error {
 		if ns, name, ok := strings.Cut(f.sa, "/"); !ok || ns == "" || name == "" || strings.Contains(name, "/") {
 			return fmt.Errorf("--service-account %q: want namespace/name, e.g. ate-users/alice", f.sa)
 		}
+	}
+	if cmd == "serve" && f.publicURL != "" && !f.demo && !f.forward && own == 0 {
+		// Without an identity flag the console acts as the shared
+		// ate-client owner. Behind a public URL that would hand cluster
+		// ownership to anyone with the link, so fail closed.
+		return errors.New("--public-url would expose the shared ate-client owner account: pass --service-account namespace/name (or --token-file, --token-command or --forward-token) so the console acts as someone with only the access they need")
 	}
 	if !f.forward {
 		return nil

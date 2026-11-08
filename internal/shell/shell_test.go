@@ -82,11 +82,12 @@ func TestPublicHost(t *testing.T) {
 		r.Header.Set("Content-Type", "application/json")
 		r.Header.Set("Accept", "application/json, text/event-stream")
 		resp, err := http.DefaultClient.Do(r)
-		ts.Close()
 		if err != nil {
+			ts.Close()
 			t.Fatal(err)
 		}
 		resp.Body.Close()
+		ts.Close()
 		switch {
 		case c.want == 0 && resp.StatusCode != http.StatusOK:
 			t.Errorf("%s: got %d, want 200", c.name, resp.StatusCode)

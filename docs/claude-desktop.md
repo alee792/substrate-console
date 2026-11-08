@@ -62,7 +62,7 @@ Claude connects to custom connectors from Anthropic's cloud, not from your machi
 
 This puts a door to your cluster on the internet. Anyone with the URL and token acts as whoever the console acts as. Before you do it:
 
-- Run it as your own ServiceAccount (`--service-account`), never the shared `ate-client` owner.
+- Run it as your own ServiceAccount (`--service-account`), never the shared `ate-client` owner. `serve --public-url` refuses to start without an identity flag (`--service-account`, `--token-file`, `--token-command` or `--forward-token`), except with `--demo`.
 - Prefer `--read-only` until you have a reason to write from a chat.
 - Use a tunnel you control, and stop it when you're done.
 
@@ -76,7 +76,7 @@ Steps:
      --public-url https://console.example.com
    ```
 
-   `--public-url` turns on auth, makes `/mcp` accept requests addressed to that host (a tunnel normally forwards your public host name, which the console would otherwise refuse as a DNS rebinding attempt), and prints the connector URL with a fresh token: `https://console.example.com/mcp?key=…`. To keep the same token across restarts, set `SUBSTRATE_CONSOLE_TOKEN` or pass `--auth-token-file`.
+   `--public-url` turns on auth, makes `/mcp` accept requests addressed to that host (a tunnel normally forwards your public host name, which the console would otherwise refuse as a DNS rebinding attempt), and prints the connector URL with a fresh token, in header form first and then as `https://console.example.com/mcp?key=…` for hosts that take only a URL. The query form ends up in the tunnel's access logs, so use the header where you can. To keep the same token across restarts, set `SUBSTRATE_CONSOLE_TOKEN` or pass `--auth-token-file`.
 3. In Claude, open **Settings → Connectors → Add custom connector**. Paste the connector URL and choose **No sign-in**. If your organization has request headers, you can instead use the plain `/mcp` URL and send `Authorization: Bearer <token>`, which keeps the token out of proxy logs.
 4. Enable the connector in a chat and ask "What needs attention on the cluster?". The answer should come with the console's card.
 
