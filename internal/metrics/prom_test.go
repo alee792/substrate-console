@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/alee792/substrate-console/internal/backend"
+	substratefake "github.com/alee792/substrate-fake"
 )
 
 func TestQueryBuildsPromQL(t *testing.T) {
@@ -33,7 +34,7 @@ func TestQueryBuildsPromQL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `1000 * histogram_quantile(0.95, sum by (le, ate_template_name) (rate(ate_actor_lifecycle_operation_duration_seconds_bucket{ate_actor_operation_name="resume", ate_template_atespace="triage"}[5m])))`
+	want := `1000 * histogram_quantile(0.95, sum by (le, ate_template_name) (rate(ate_actor_lifecycle_operation_duration_seconds_bucket{ate_actor_operation_name="resume", ate_template_atespace="triage", error_type=""}[5m])))`
 	if got[len(got)-1] != want {
 		t.Errorf("query\n got %s\nwant %s", got[len(got)-1], want)
 	}
@@ -49,5 +50,32 @@ func TestDottedNames(t *testing.T) {
 	sel := dotted.sel(dotted.crashes, `"ate.template.atespace"="triage"`)
 	if sel != `{"ate.actor.crashes", "ate.template.atespace"="triage"}` {
 		t.Errorf("sel = %s", sel)
+	}
+}
+
+// A full pool rejects most resumes in a few milliseconds. Those failures are
+// in the same histogram, and must not make resume latency look fast.
+func TestResumeP95LeavesOutFailures(t *testing.T) {
+	for _, names := range []substratefake.MetricNames{substratefake.DottedNames, substratefake.UnderscoreNames} {
+		c, err := substratefake.Start(context.Background(), substratefake.Options{Names: names, Scenario: func(w *substratefake.World) {
+			substratefake.Basic(w)
+			w.AddTemplate(substratefake.TemplateSpec{Atespace: "a", Name: "full", Image: "img", Selector: map[string]string{"pool": "default"}, Created: time.Now().Add(-2 * time.Hour)}.Proto())
+			w.SetProfile("a", "full", substratefake.Profile{
+				ResumesPerSecond:   func(time.Time) float64 { return 1 },
+				ResumeP95:          func(time.Time) time.Duration { return 400 * time.Millisecond },
+				ResumeFailureRatio: func(time.Time) float64 { return 0.9 },
+			})
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		s, err := NewPrometheus(c.PrometheusURL).Query(context.Background(), backend.MetricQuery{Metric: backend.MetricResumeP95, Window: time.Hour, Step: 5 * time.Minute})
+		if err != nil || len(s) != 1 || len(s[0].Points) == 0 {
+			t.Fatalf("%v: series %+v, err %v", names, s, err)
+		}
+		if v := s[0].Points[len(s[0].Points)-1].V; v < 340 || v > 460 {
+			t.Errorf("%v: resume p95 = %.0f ms, want about 400", names, v)
+		}
 	}
 }

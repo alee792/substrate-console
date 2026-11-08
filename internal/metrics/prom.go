@@ -119,7 +119,10 @@ func (p *Prometheus) Query(ctx context.Context, q backend.MetricQuery) ([]model.
 	var expr string
 	switch q.Metric {
 	case backend.MetricResumeP95:
-		expr = fmt.Sprintf(`1000 * histogram_quantile(0.95, sum%s (rate(%s[5m])))`, byClause("le"), n.sel(n.lifecycleBucket, resume...))
+		// Failed resumes share the histogram and are rejected in a few
+		// milliseconds, so leave them out or a full pool reads as fast.
+		ok := append(append([]string{}, resume...), fmt.Sprintf(`%s=""`, n.errType))
+		expr = fmt.Sprintf(`1000 * histogram_quantile(0.95, sum%s (rate(%s[5m])))`, byClause("le"), n.sel(n.lifecycleBucket, ok...))
 	case backend.MetricResumeFailures:
 		failed := append(append([]string{}, resume...), fmt.Sprintf(`%s="ResourceExhausted"`, n.errType))
 		expr = fmt.Sprintf(`100 * (sum%s (rate(%s[5m])) or vector(0)) / sum%s (rate(%s[5m]))`,
