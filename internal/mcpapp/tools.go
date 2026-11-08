@@ -151,9 +151,12 @@ func (s *Server) status(ctx context.Context, _ *mcp.CallToolRequest, in ScopeIn)
 		return nil, nil, err
 	}
 	if in.Atespace != "" && !contains(c.Atespaces, in.Atespace) {
+		if !c.Access.AllAtespaces {
+			return nil, nil, fmt.Errorf("atespace %q doesn't exist or you can't read it; you can read: %s", in.Atespace, strings.Join(c.Atespaces, ", "))
+		}
 		return nil, nil, fmt.Errorf("atespace %q not found; known atespaces: %s", in.Atespace, strings.Join(c.Atespaces, ", "))
 	}
-	st := s.engine.Evaluate(ctx, c, in.Atespace, s.opts.Metrics)
+	st := s.engineFor(ctx).Evaluate(ctx, c, in.Atespace, s.metricsFor(c))
 	return &mcp.CallToolResult{Content: text(statusText(st))}, st, nil
 }
 
@@ -543,6 +546,9 @@ func (s *Server) listPools(ctx context.Context, _ *mcp.CallToolRequest, _ struct
 	if err != nil {
 		return nil, nil, err
 	}
+	if !c.Access.Workers {
+		return nil, nil, fmt.Errorf("worker pools need cluster-wide viewer access, which %s doesn't have", orYou(c.Access.Principal))
+	}
 	var odd []model.Worker
 	for _, w := range c.Workers {
 		if w.State != "active" {
@@ -581,7 +587,11 @@ func (s *Server) queryMetric(ctx context.Context, _ *mcp.CallToolRequest, in Met
 	if err != nil {
 		return nil, nil, err
 	}
-	series, err := s.opts.Metrics.Query(ctx, backend.MetricQuery{Metric: m, By: in.By, Atespace: in.Atespace, Window: w, Step: w / 60})
+	c, err := s.snapshot(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	series, err := s.metricsFor(c).Query(ctx, backend.MetricQuery{Metric: m, By: in.By, Atespace: in.Atespace, Window: w, Step: w / 60})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -606,4 +616,11 @@ func (s *Server) queryMetric(ctx context.Context, _ *mcp.CallToolRequest, in Met
 		fmt.Fprintf(&b, "- %s: now %.1f, start %.1f, min %.1f, max %.1f\n", sr.Label, last, first, lo, hi)
 	}
 	return &mcp.CallToolResult{Content: text(b.String())}, res, nil
+}
+
+func orYou(principal string) string {
+	if principal == "" {
+		return "your token"
+	}
+	return principal
 }

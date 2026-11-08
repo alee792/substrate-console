@@ -7,15 +7,12 @@ package mcpapp
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/alee792/substrate-console/internal/backend"
-	"github.com/alee792/substrate-console/internal/model"
-	"github.com/alee792/substrate-console/internal/rules"
 )
 
 // MCP Apps constants (SEP-1865, stable 2026-01-26).
@@ -47,14 +44,14 @@ type Options struct {
 	CacheFor time.Duration
 }
 
-// Server holds the state shared by every MCP session.
+// Server holds the state shared by every MCP session. What it caches is
+// kept per caller (see callerState), since callers can see different parts
+// of the cluster.
 type Server struct {
-	opts   Options
-	engine *rules.Engine
+	opts Options
 
 	mu      sync.Mutex
-	cached  *model.Cluster
-	cacheAt time.Time
+	callers map[string]*callerState
 }
 
 // New returns the shared server state. Call MCP to get an *mcp.Server.
@@ -65,7 +62,7 @@ func New(opts Options) *Server {
 	if opts.Version == "" {
 		opts.Version = "dev"
 	}
-	return &Server{opts: opts, engine: rules.NewEngine()}
+	return &Server{opts: opts, callers: map[string]*callerState{}}
 }
 
 const instructions = `substrate-console reads and operates an Agent Substrate cluster.
@@ -78,6 +75,7 @@ Write tools (suspend, resume, revert, delete, drain, create_actor, delete_templa
 func (s *Server) MCP() *mcp.Server {
 	srv := mcp.NewServer(&mcp.Implementation{Name: "substrate-console", Title: "Substrate", Version: s.opts.Version, Icons: icons},
 		&mcp.ServerOptions{Instructions: instructions, Capabilities: capabilities()})
+	srv.AddReceivingMiddleware(withCaller)
 	s.addView(srv)
 	s.addEntrypoints(srv)
 	s.addMentions(srv)
@@ -88,26 +86,6 @@ func (s *Server) MCP() *mcp.Server {
 		s.addTemplateWrites(srv)
 	}
 	return srv
-}
-
-func (s *Server) snapshot(ctx context.Context) (*model.Cluster, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.cached != nil && time.Since(s.cacheAt) < s.opts.CacheFor {
-		return s.cached, nil
-	}
-	c, err := s.opts.Backend.Snapshot(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("read cluster: %w", err)
-	}
-	s.cached, s.cacheAt = c, time.Now()
-	return c, nil
-}
-
-func (s *Server) invalidate() {
-	s.mu.Lock()
-	s.cached = nil
-	s.mu.Unlock()
 }
 
 // viewMeta is the resource _meta: the MCP Apps fields under "ui", and the

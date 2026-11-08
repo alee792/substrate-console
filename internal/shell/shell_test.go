@@ -12,7 +12,7 @@ import (
 func TestToken(t *testing.T) {
 	srv := mcp.NewServer(&mcp.Implementation{Name: "t", Version: "0"}, nil)
 	const tok = "0123456789abcdef0123"
-	h := Handler(srv, []byte("<html>"), tok)
+	h := Handler(srv, []byte("<html>"), Auth{Token: tok})
 	cases := []struct {
 		name, target, auth, origin string
 		want                       int
@@ -54,7 +54,7 @@ func TestToken(t *testing.T) {
 func TestNoToken(t *testing.T) {
 	srv := mcp.NewServer(&mcp.Implementation{Name: "t", Version: "0"}, nil)
 	w := httptest.NewRecorder()
-	Handler(srv, nil, "").ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/mcp", nil))
+	Handler(srv, nil, Auth{}).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/mcp", nil))
 	if w.Code == http.StatusUnauthorized {
 		t.Fatal("/mcp asked for a token with auth off")
 	}

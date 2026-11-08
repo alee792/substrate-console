@@ -172,8 +172,8 @@ func (s *Server) addTemplateWrites(srv *mcp.Server) {
 // when metrics are available.
 func (s *Server) rows(ctx context.Context, c *model.Cluster) []TemplateRow {
 	p95 := map[string]float64{}
-	if s.opts.Metrics != nil {
-		if series, err := s.opts.Metrics.Query(ctx, backend.MetricQuery{Metric: backend.MetricResumeP95, By: "template", Window: time.Hour, Step: 5 * time.Minute}); err == nil {
+	if mt := s.metricsFor(c); mt != nil {
+		if series, err := mt.Query(ctx, backend.MetricQuery{Metric: backend.MetricResumeP95, By: "template", Window: time.Hour, Step: 5 * time.Minute}); err == nil {
 			for _, se := range series {
 				if n := len(se.Points); n > 0 {
 					p95[se.Label] = se.Points[n-1].V
@@ -310,8 +310,8 @@ func (s *Server) getTemplate(ctx context.Context, _ *mcp.CallToolRequest, in Tem
 	if len(d.Actors) > 12 {
 		d.Actors = d.Actors[:12]
 	}
-	if s.opts.Metrics != nil {
-		series, err := s.opts.Metrics.Query(ctx, backend.MetricQuery{Metric: backend.MetricResumeP95, By: "template", Atespace: in.Atespace, Window: 24 * time.Hour, Step: 30 * time.Minute})
+	if mt := s.metricsFor(c); mt != nil {
+		series, err := mt.Query(ctx, backend.MetricQuery{Metric: backend.MetricResumeP95, By: "template", Atespace: in.Atespace, Window: 24 * time.Hour, Step: 30 * time.Minute})
 		if err == nil {
 			m := &MetricResult{Kind: "metric", Metric: string(backend.MetricResumeP95), Title: "Resume p95", Unit: "ms", By: "template", Window: "24h"}
 			for _, se := range series {
@@ -541,7 +541,7 @@ func (s *Server) createTemplate(ctx context.Context, _ *mcp.CallToolRequest, in 
 	}
 
 	if err := s.opts.Backend.CreateTemplate(ctx, spec, selector); err != nil {
-		return nil, nil, fmt.Errorf("create template: %w", err)
+		return nil, nil, fmt.Errorf("create template: %s", explain(err, "can't create templates in "+spec.Atespace))
 	}
 	s.invalidate()
 	return s.getTemplate(ctx, nil, TemplateIn{Atespace: spec.Atespace, Name: spec.Name})
@@ -597,7 +597,7 @@ func (s *Server) createActor(ctx context.Context, _ *mcp.CallToolRequest, in Cre
 		return nil, nil, fmt.Errorf("can't create %s: %s", ref, tg.Reason)
 	}
 	if err := s.opts.Backend.CreateActor(ctx, ref, in.Template); err != nil {
-		return nil, nil, fmt.Errorf("create actor: %w", err)
+		return nil, nil, fmt.Errorf("create actor: %s", explain(err, "can't create actors in "+ref.Atespace))
 	}
 	s.invalidate()
 	res.Summary = fmt.Sprintf("Created %s.", in.Name)
@@ -629,7 +629,7 @@ func (s *Server) deleteTemplate(ctx context.Context, _ *mcp.CallToolRequest, in 
 		return &mcp.CallToolResult{Content: text(actionText(res))}, res, nil
 	}
 	if err := s.opts.Backend.DeleteTemplate(ctx, in.Atespace, in.Name); err != nil {
-		return nil, nil, fmt.Errorf("delete template: %w", err)
+		return nil, nil, fmt.Errorf("delete template: %s", explain(err, "can't delete templates in "+in.Atespace))
 	}
 	s.invalidate()
 	res.Summary = fmt.Sprintf("Deleted %s.", in.Name)

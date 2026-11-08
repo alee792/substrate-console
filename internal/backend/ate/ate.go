@@ -7,12 +7,15 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	ateapi "go.ate.dev/substrate/api/ateapi/v1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	corev1 "k8s.io/api/core/v1"
@@ -33,13 +36,25 @@ type Config struct {
 	Context    string
 	// Endpoint is an ateapi address. Empty means port-forward to the api
 	// Service, as kubectl-ate does.
-	Endpoint  string
-	TokenFile string
+	Endpoint string
+	// TokenFile and TokenCommand give the console's own ateapi token. With
+	// neither, it mints one for the shared ate-client ServiceAccount.
+	TokenFile    string
+	TokenCommand string
+	// Forward makes every call use the caller's token from the context
+	// (backend.WithCaller), and the console's own identity is never used
+	// for ateapi.
+	Forward bool
+	// Atespaces are read for callers who can't list atespaces, as long as
+	// the caller can get them.
+	Atespaces []string
 }
 
 // Live is the live backend.
 type Live struct {
 	api   ateapi.ControlClient
+	creds callerCreds
+	known []string
 	k8s   *kubernetes.Clientset
 	dyn   dynamic.Interface
 	close func()
@@ -67,7 +82,7 @@ func New(ctx context.Context, cfg Config) (*Live, error) {
 	if err != nil {
 		return nil, err
 	}
-	conn, stop, err := dial(ctx, rc, cs, cfg.Endpoint, cfg.TokenFile)
+	conn, creds, stop, err := dial(ctx, rc, cs, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -79,7 +94,7 @@ func New(ctx context.Context, cfg Config) (*Live, error) {
 			name = raw.CurrentContext
 		}
 	}
-	return &Live{api: ateapi.NewControlClient(conn), k8s: cs, dyn: dyn, close: stop, name: name, workers: map[string]string{}}, nil
+	return &Live{api: ateapi.NewControlClient(conn), creds: creds, known: cfg.Atespaces, k8s: cs, dyn: dyn, close: stop, name: name, workers: map[string]string{}}, nil
 }
 
 // Close tears down the connection and port-forward.
@@ -162,25 +177,79 @@ func convertActor(a *ateapi.Actor, now time.Time) model.Actor {
 	return out
 }
 
-// Snapshot implements backend.Backend.
-func (l *Live) Snapshot(ctx context.Context) (*model.Cluster, error) {
-	now := time.Now()
-	out := &model.Cluster{Name: l.name, FetchedAt: now}
+// Access reports who calls in ctx act as, before any call is made.
+func (l *Live) access(ctx context.Context) model.Access {
+	a := model.Access{AllAtespaces: true, Workers: true}
+	if tok, err := l.creds.token(ctx); err == nil {
+		a.Principal, _ = Claims(tok)
+	}
+	a.Shared = a.Principal == "system:serviceaccount:"+namespace()+":"+clientAccount()
+	return a
+}
 
+func denied(err error) bool {
+	c := status.Code(err)
+	return c == codes.PermissionDenied || c == codes.NotFound
+}
+
+// atespaces lists every atespace, or, for a caller who isn't a global
+// viewer, the configured and requested ones the caller can get.
+func (l *Live) atespaces(ctx context.Context, acc *model.Access) ([]string, error) {
+	var out []string
 	var token string
 	for {
 		r, err := l.api.ListAtespaces(ctx, &ateapi.ListAtespacesRequest{Options: &ateapi.ListOptions{PageSize: 500, PageToken: token}})
+		if status.Code(err) == codes.PermissionDenied {
+			acc.AllAtespaces = false
+			return l.knownAtespaces(ctx)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("list atespaces: %w", err)
 		}
 		for _, a := range r.GetAtespaces() {
-			out.Atespaces = append(out.Atespaces, a.GetMetadata().GetName())
+			out = append(out, a.GetMetadata().GetName())
 		}
 		if token = r.GetNextPageToken(); token == "" {
 			break
 		}
 	}
-	sort.Strings(out.Atespaces)
+	sort.Strings(out)
+	return out, nil
+}
+
+func (l *Live) knownAtespaces(ctx context.Context) ([]string, error) {
+	want := append([]string{}, l.known...)
+	if a := backend.AtespaceFrom(ctx); a != "" && !slices.Contains(want, a) {
+		want = append(want, a)
+	}
+	var out []string
+	for _, name := range want {
+		_, err := l.api.GetAtespace(ctx, &ateapi.GetAtespaceRequest{Atespace: &ateapi.ObjectRef{Name: name}})
+		if denied(err) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("get atespace %s: %w", name, err)
+		}
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// Snapshot implements backend.Backend. It reads as the caller in ctx, and
+// leaves out what the caller can't read instead of failing: see
+// model.Access.
+func (l *Live) Snapshot(ctx context.Context) (*model.Cluster, error) {
+	now := time.Now()
+	out := &model.Cluster{Name: l.name, FetchedAt: now, Access: l.access(ctx)}
+
+	spaces, err := l.atespaces(ctx, &out.Access)
+	if err != nil {
+		return nil, err
+	}
+	out.Atespaces = spaces
+	var token string
 
 	for _, space := range out.Atespaces {
 		token = ""
@@ -223,6 +292,12 @@ func (l *Live) Snapshot(ctx context.Context) (*model.Cluster, error) {
 	token = ""
 	for {
 		r, err := l.api.ListWorkers(ctx, &ateapi.ListWorkersRequest{Options: &ateapi.ListOptions{PageSize: 500, PageToken: token}})
+		if status.Code(err) == codes.PermissionDenied {
+			// Pools come from Kubernetes with the console's own credentials,
+			// so a caller who can't see workers doesn't see them either.
+			out.Access.Workers = false
+			return out, nil
+		}
 		if err != nil {
 			return nil, fmt.Errorf("list workers: %w", err)
 		}

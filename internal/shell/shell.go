@@ -11,14 +11,31 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// Handler returns the HTTP handler for the shell and the MCP endpoint. When
-// token is set, /mcp requires it (see requireToken); the page at / stays
-// open, because it holds no data and asks for the token itself.
-func Handler(server *mcp.Server, shellHTML []byte, token string) http.Handler {
+// Auth says what /mcp requires. The zero value requires nothing.
+type Auth struct {
+	// Token is a shared secret /mcp requires (see requireToken). Everyone
+	// who has it acts as the console's own identity.
+	Token string
+	// Caller, when set, makes /mcp act as each caller instead, and Token is
+	// ignored.
+	Caller *CallerAuth
+}
+
+// Handler returns the HTTP handler for the shell and the MCP endpoint. The
+// page at / stays open, because it holds no data and asks for the token
+// itself.
+func Handler(server *mcp.Server, shellHTML []byte, a Auth) http.Handler {
 	mux := http.NewServeMux()
 	var mcpHandler http.Handler = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
-	if token != "" {
-		mcpHandler = requireToken(token, mcpHandler)
+	switch {
+	case a.Caller != nil:
+		mcpHandler = a.Caller.middleware()(mcpHandler)
+		if a.Caller.withMetadata() {
+			mux.Handle("GET "+metadataPath, a.Caller.metadata())
+			mux.Handle("OPTIONS "+metadataPath, a.Caller.metadata())
+		}
+	case a.Token != "":
+		mcpHandler = requireToken(a.Token, mcpHandler)
 	}
 	// Browsers on other origins can't drive the write tools through the
 	// user's browser. Requests without browser headers (MCP hosts, curl)

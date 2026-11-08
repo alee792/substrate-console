@@ -150,7 +150,15 @@ export function StatusPage({ st, nav }: { st: Status; nav: Nav }) {
           </div>
         </Sec>
       )}
-      {(st.notes ?? []).map((n) => <p class="note" key={n}>{n}</p>)}
+      <div class="notes">
+        {(st.notes ?? []).map((n) => <p class="note" key={n}>{n}</p>)}
+        {st.access?.principal && (
+          <p class="note">
+            Reading as <span class="mono">{st.access.principal}</span>
+            {st.access.shared && ", the shared account kubectl ate uses. Anyone with this console has cluster owner."}
+          </p>
+        )}
+      </div>
     </div>
   );
 }
