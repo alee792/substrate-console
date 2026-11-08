@@ -51,6 +51,7 @@ bin/substrate-console serve --context kind-dev --prometheus-url http://localhost
 | `--addr` | Listen address for `serve` (default `127.0.0.1:7878`). |
 | `--auth` | Require a token on `/mcp`. On by default when `--addr` isn't loopback. |
 | `--auth-token-file` | The token `/mcp` requires (or set `SUBSTRATE_CONSOLE_TOKEN`). Without either, `--auth` generates one. |
+| `--public-url` | `serve`: the HTTPS origin a tunnel or proxy serves the console at. `/mcp` then accepts that host name and requires a token. |
 | `--forward-token` | `serve`: act as each caller. `/mcp` requires the caller's own ateapi token and sends it on. |
 | `--canopy-url` | Show agents from this Canopy (or set `CANOPY_URL`). The API key comes from `CANOPY_API_KEY` or `--canopy-key-file`. |
 | `--canopy-key-file` | File holding the Canopy API key. |
@@ -79,6 +80,8 @@ Everyone using the console acts as its one Canopy API key, so `--canopy-url` can
 
 ## Connecting an assistant
 
+Claude Desktop has its own guide: [docs/claude-desktop.md](docs/claude-desktop.md). It covers both setups, why views show only through a custom connector today, and what still needs checking on a real machine.
+
 **stdio** (Claude Desktop, Claude Code, VS Code, Codex):
 
 ```json
@@ -91,7 +94,7 @@ Everyone using the console acts as its one Canopy API key, so `--canopy-url` can
 
 **Streamable HTTP**: run `substrate-console serve` and point the host at `http://127.0.0.1:7878/mcp`. `/mcp` always rejects cross-origin browser requests.
 
-ChatGPT needs a public HTTPS URL, so put it behind a tunnel you control and turn on `--auth`. A tunnel connects from loopback, so the server can't tell it isn't you. With auth on, `/mcp` takes `Authorization: Bearer <token>`, or `?key=<token>` for hosts whose connector settings only take a URL. The query form can end up in proxy logs, so use the header where you can. `serve --auth` prints the page link as `/#token=…`. The fragment never reaches a server, and the page drops it from the address bar once read.
+ChatGPT, and custom connectors in Claude, connect from the vendor's cloud, so they need a public HTTPS URL. Put the console behind a tunnel you control and pass its origin with `--public-url`, which turns on auth. A tunnel connects from loopback, so without auth the server can't tell it isn't you, and without `--public-url` it refuses the tunnel's host name as a DNS rebinding attempt. With auth on, `/mcp` takes `Authorization: Bearer <token>`, or `?key=<token>` for hosts whose connector settings only take a URL. The query form can end up in proxy logs, so use the header where you can. `serve --auth` prints the page link as `/#token=…`. The fragment never reaches a server, and the page drops it from the address bar once read.
 
 ## Who the console acts as
 
@@ -113,6 +116,7 @@ The server implements the [MCP Apps extension](https://github.com/modelcontextpr
 
 **MCP Apps**
 
+- **Negotiation.** The server declares `io.modelcontextprotocol/ui` with `mimeTypes: ["text/html;profile=mcp-app"]` under `capabilities.extensions`. Claude Desktop has been seen to skip views from servers that don't.
 - **Views.** One self-contained HTML bundle, declared twice with `text/html;profile=mcp-app`: `ui://substrate-console/console.html` for the full console and `ui://substrate-console/card.html` for cards in a conversation. Both set `_meta.ui.csp` (`resourceDomains` for fonts only, no `connectDomains`) and `prefersBorder`.
 - **Tools.** Tools with a view carry `_meta.ui.resourceUri` and `_meta.ui.visibility`, plus the deprecated flat `ui/resourceUri` key. Every tool sets `readOnlyHint`, `destructiveHint` and `openWorldHint`. `structuredContent` (with a `kind` field) drives the view; `content` is a text summary for the model.
 - **View.** Follows the host's theme, style variables and safe-area insets. It navigates by calling tools through the host, and it keeps the model told what the user is looking at with `ui/update-model-context`. That context is background context (`audience: ["assistant"]`) with `structuredContent`. It polls only in full screen, except a card for an agent session that is working, which follows it until the turn ends. Forms are never polled.

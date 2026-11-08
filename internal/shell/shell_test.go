@@ -59,3 +59,40 @@ func TestNoToken(t *testing.T) {
 		t.Fatal("/mcp asked for a token with auth off")
 	}
 }
+
+// TestPublicHost serves the handler on a real loopback listener, since the
+// SDK's DNS rebinding check reads the listener's address.
+func TestPublicHost(t *testing.T) {
+	srv := mcp.NewServer(&mcp.Implementation{Name: "t", Version: "0"}, nil)
+	const tok = "0123456789abcdef0123"
+	for _, c := range []struct {
+		name, public, host string
+		want               int
+	}{
+		{"tunnel host refused without a public host", "", "console.example.com", http.StatusForbidden},
+		{"public host", "console.example.com", "console.example.com", 0},
+		{"public host with port", "console.example.com", "Console.Example.com:443", 0},
+		{"loopback still works", "console.example.com", "127.0.0.1:7878", 0},
+		{"other host refused", "console.example.com", "evil.example", http.StatusForbidden},
+	} {
+		ts := httptest.NewServer(Handler(srv, nil, Auth{Token: tok, PublicHost: c.public}))
+		body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}`
+		r, _ := http.NewRequest(http.MethodPost, ts.URL+"/mcp?key="+tok, strings.NewReader(body))
+		r.Host = c.host
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Accept", "application/json, text/event-stream")
+		resp, err := http.DefaultClient.Do(r)
+		if err != nil {
+			ts.Close()
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		ts.Close()
+		switch {
+		case c.want == 0 && resp.StatusCode != http.StatusOK:
+			t.Errorf("%s: got %d, want 200", c.name, resp.StatusCode)
+		case c.want != 0 && resp.StatusCode != c.want:
+			t.Errorf("%s: got %d, want %d", c.name, resp.StatusCode, c.want)
+		}
+	}
+}
