@@ -25,6 +25,12 @@ func connect(t *testing.T, readOnly bool) *mcp.ClientSession {
 
 func connectFake(t *testing.T, readOnly bool) (*mcp.ClientSession, *substratefake.Cluster) {
 	t.Helper()
+	return connectWith(t, func(o *mcpapp.Options) { o.ReadOnly = readOnly })
+}
+
+// connectWith is connectFake with the options changed by opt.
+func connectWith(t *testing.T, opt func(*mcpapp.Options)) (*mcp.ClientSession, *substratefake.Cluster) {
+	t.Helper()
 	ctx := context.Background()
 	fc, err := substratefake.Start(ctx, substratefake.Options{Scenario: substratefake.Demo})
 	if err != nil {
@@ -36,7 +42,9 @@ func connectFake(t *testing.T, readOnly bool) (*mcp.ClientSession, *substratefak
 		t.Fatal(err)
 	}
 	t.Cleanup(live.Close)
-	s := mcpapp.New(mcpapp.Options{Backend: live, Metrics: metrics.NewPrometheus(fc.PrometheusURL), ViewHTML: []byte("<!doctype html><title>v</title>"), ReadOnly: readOnly, CacheFor: -1})
+	o := mcpapp.Options{Backend: live, Metrics: metrics.NewPrometheus(fc.PrometheusURL), ViewHTML: []byte("<!doctype html><title>v</title>"), CacheFor: -1}
+	opt(&o)
+	s := mcpapp.New(o)
 	ct, st := mcp.NewInMemoryTransports()
 	if _, err := s.MCP().Connect(ctx, st, nil); err != nil {
 		t.Fatal(err)

@@ -16,7 +16,7 @@ export interface Nav {
   readOnly?: boolean;
 }
 
-const WRITE_TOOLS = new Set(["suspend_actors", "resume_actors", "revert_actors", "delete_actors", "drain_worker", "create_actor", "delete_template"]);
+const WRITE_TOOLS = new Set(["suspend_actors", "resume_actors", "revert_actors", "delete_actors", "drain_worker", "create_actor", "delete_template", "end_session"]);
 export const isWrite = (tool: string) => WRITE_TOOLS.has(tool);
 
 const cap = (s: string) => s[0].toUpperCase() + s.slice(1);
@@ -279,8 +279,8 @@ export function ActorPage({ d, nav }: { d: ActorDetail; nav: Nav }) {
   );
 }
 
-function Prop({ k, v, mono }: { k: string; v: string; mono?: boolean }) {
-  return <div class="prop"><div class="k">{k}</div><div class={`v${mono ? " mono" : ""}`} title={v}>{v}</div></div>;
+export function Prop({ k, v, mono, wrap }: { k: string; v: string; mono?: boolean; wrap?: boolean }) {
+  return <div class="prop"><div class="k">{k}</div><div class={`v${mono ? " mono" : ""}${wrap ? " wrap" : ""}`} title={v}>{v}</div></div>;
 }
 
 export function MetricPage({ m }: { m: MetricResult }) {
@@ -320,7 +320,7 @@ const CONSEQUENCE: Record<string, string> = {
 
 export function Confirm({ r, onConfirm, onCancel, busy }: { r: ActionResult; onConfirm?: () => void; onCancel?: () => void; busy?: boolean }) {
   const ok = r.targets.filter((t) => t.ok).length;
-  const destructive = r.verb.startsWith("delete") || r.verb === "revert" || r.verb === "drain";
+  const destructive = r.verb.startsWith("delete") || r.verb.startsWith("end") || r.verb === "revert" || r.verb === "drain";
   const label = r.targets.length === 0 ? cap(r.verb) : r.verb === "create" ? "Create actor" : `${cap(r.verb)} ${ok === 1 ? "actor" : `${ok} actors`}`;
   return (
     <div class="confirm" role="dialog" aria-label={`Confirm ${r.verb}`}>

@@ -12,6 +12,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/alee792/substrate-console/internal/agents"
 	"github.com/alee792/substrate-console/internal/backend"
 )
 
@@ -40,6 +41,9 @@ type Options struct {
 	// FontDomains are origins the view loads fonts from. They are declared
 	// in the view's CSP. Leave empty to use the host's fonts only.
 	FontDomains []string
+	// Agents is the Canopy the console shows agents from. Nil leaves the
+	// agent tools out.
+	Agents *agents.Client
 	// CacheFor bounds how often tools hit the backend. Default 2s.
 	CacheFor time.Duration
 }
@@ -74,8 +78,12 @@ Write tools (suspend, resume, revert, delete, drain, create_actor, delete_templa
 
 // MCP builds an *mcp.Server with every tool and the view resource.
 func (s *Server) MCP() *mcp.Server {
+	instr := instructions
+	if s.opts.Agents != nil {
+		instr += "\n" + agentInstructions
+	}
 	srv := mcp.NewServer(&mcp.Implementation{Name: "substrate-console", Title: "Substrate", Version: s.opts.Version, Icons: icons},
-		&mcp.ServerOptions{Instructions: instructions, Capabilities: capabilities()})
+		&mcp.ServerOptions{Instructions: instr, Capabilities: capabilities()})
 	srv.AddReceivingMiddleware(withCaller)
 	s.addView(srv)
 	s.addEntrypoints(srv)
@@ -85,6 +93,9 @@ func (s *Server) MCP() *mcp.Server {
 	if !s.opts.ReadOnly {
 		s.addWriteTools(srv)
 		s.addTemplateWrites(srv)
+	}
+	if s.opts.Agents != nil {
+		s.addAgentTools(srv)
 	}
 	return srv
 }

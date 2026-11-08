@@ -5,13 +5,14 @@ on:
     branches: [main]
 permissions:
   contents: read
+env:
+  # Fetch substrate-fake and Canopy straight from GitHub, so a new tag or
+  # commit works before the module proxy and checksum database have it.
+  # go.sum still pins them.
+  GOPRIVATE: github.com/alee792/substrate-fake,github.com/alee792/canopy
 jobs:
   test:
     runs-on: ubuntu-latest
-    env:
-      # Fetch substrate-fake straight from GitHub, so a new tag works before
-      # the module proxy and checksum database have it. go.sum still pins it.
-      GOPRIVATE: github.com/alee792/substrate-fake
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -27,3 +28,49 @@ jobs:
         run: git diff --exit-code -- web/dist
       - run: go vet ./...
       - run: go test -race ./...
+
+  # The agent tools against a real Canopy, at the version go.mod pins:
+  # stock Claude Code and Codex from npm, with Canopy's scripted model.
+  canopy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Canopy and the harnesses
+        run: |
+          v=$(go list -m -f '{{.Version}}' github.com/alee792/canopy)
+          go mod download github.com/alee792/canopy
+          codex=$(cat "$(go list -m -f '{{.Dir}}' github.com/alee792/canopy)/internal/harness/codex/schema/VERSION")
+          GOBIN="$RUNNER_TEMP/bin" go install "github.com/alee792/canopy/cmd/canopy@$v" "github.com/alee792/canopy/cmd/canopy-bridge@$v"
+          # Claude Code is the version Canopy's own CI runs.
+          npm install -g "@openai/codex@$codex" @anthropic-ai/claude-code@2.1.319
+      - name: Start Canopy
+        run: |
+          cat > "$RUNNER_TEMP/canopy.json" <<JSON
+          {"listen": "127.0.0.1:8000", "provider": "local",
+           "local": {"dir": "$RUNNER_TEMP/sandboxes", "bridge": "$RUNNER_TEMP/bin/canopy-bridge",
+                     "claude": "$(which claude)", "codex": "$(which codex)"},
+           "local_gateway": {"mock": true},
+           "dev_tenant": {"org": "ci", "project": "ci"},
+           "ledger_path": "$RUNNER_TEMP/usage.log"}
+          JSON
+          "$RUNNER_TEMP/bin/canopy" serve --config "$RUNNER_TEMP/canopy.json" > "$RUNNER_TEMP/canopy.log" 2>&1 &
+          for i in $(seq 30); do
+            curl -fs -H 'Authorization: Bearer ci' http://127.0.0.1:8000/canopy/v1/agents > /dev/null && exit 0
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/canopy.log"; exit 1
+      - name: Agent tools against Canopy
+        run: go test -race ./internal/mcpapp -run AgainstCanopy -count=1 -v
+        env:
+          CANOPY_TEST_URL: http://127.0.0.1:8000
+          CANOPY_API_KEY: ci
+          CANOPY_TEST_CODEX: "1"
+      - name: Canopy's log
+        if: failure()
+        run: cat "$RUNNER_TEMP/canopy.log"

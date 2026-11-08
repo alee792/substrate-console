@@ -18,6 +18,7 @@ The console is built around progressive disclosure:
 3. **Templates.** What people actually author. Each template shows its image, size, sandbox, golden snapshot, actors, and how it compares with its other versions on crashes and resume latency. Templates are immutable, so the creator makes new templates and next versions, pre-filled from the current one. The assistant can draft one from a description, and you review it in the form before anything is created.
 4. **Actors.** State, crash reason, a plain hint (for example "Node heap is set to 4 GiB; the sandbox allows 2 GiB"), timeline, logs and snapshots.
 5. **Ask.** Instead of general dashboards, the assistant answers the question and draws the chart with `query_metric`.
+6. **Agents**, when the console is pointed at [Canopy](https://github.com/alee792/canopy). See [Agents](#agents).
 
 Every view can be scoped to the whole cluster or a single atespace. The scope only narrows what you see. What you can see and change is decided by Substrate, for whoever the console acts as: see [Who the console acts as](#who-the-console-acts-as).
 
@@ -51,7 +52,30 @@ bin/substrate-console serve --context kind-dev --prometheus-url http://localhost
 | `--auth` | Require a token on `/mcp`. On by default when `--addr` isn't loopback. |
 | `--auth-token-file` | The token `/mcp` requires (or set `SUBSTRATE_CONSOLE_TOKEN`). Without either, `--auth` generates one. |
 | `--forward-token` | `serve`: act as each caller. `/mcp` requires the caller's own ateapi token and sends it on. |
+| `--canopy-url` | Show agents from this Canopy (or set `CANOPY_URL`). The API key comes from `CANOPY_API_KEY` or `--canopy-key-file`. |
+| `--canopy-key-file` | File holding the Canopy API key. |
 | `--no-web-fonts` | Don't load Geist from Google Fonts; use system fonts. |
+
+## Agents
+
+[Canopy](https://github.com/alee792/canopy) runs Anthropic and OpenAI managed agents on Substrate. Point the console at it and an Agents section appears:
+
+```sh
+CANOPY_API_KEY=… bin/substrate-console serve --context kind-dev --canopy-url http://localhost:8000
+```
+
+![A session waiting for approval](docs/images/session.png)
+
+The console has no agent format of its own. An agent is an Anthropic or OpenAI agent, and the console shows its definition exactly as that API returns it. It never edits one: a change is a push from git (`agent.anthropic.yaml` or `agent.openai.yaml`, then `canopy push`) or an update through the lab API, and either makes a new version.
+
+- **Agents.** Every agent on either API, where it's defined (a repository and directory, or the API), its harness and model, and what's running.
+- **An agent.** Its versions, each with the commit and branch a push came from or marked as an API edit, what its bundle installs (instructions, skills, MCP servers, subagents), its definition at any version, and its recent sessions.
+- **Try it.** A playground that starts a real session the way an app would: through the agent's own API with the official SDK (`anthropic-sdk-go`, `openai-go`), pointed at Canopy. You pick the version and environment (Anthropic) or the network (OpenAI), and optionally a repository to check out. The environment decides what the session can reach; the agent can't widen it, and Canopy's refusal shows on the form.
+- **A session.** The transcript (messages, commands with their output, tool calls, file changes), tool calls waiting for approval with Allow and Deny, a reply box, and the sandbox behind it: its state, network, what it can reach and, on Substrate, its actor, linked to the actor page. Stop, suspend, resume and end are one click; end asks first.
+
+The transcript is built from Canopy's native session log, which is the same for Claude Code and Codex. Approvals are read and answered through the Anthropic API, as an application would; OpenAI agents don't ask. A session waiting on a custom tool says so, since only the app that started it can answer.
+
+Everyone using the console acts as its one Canopy API key, so `--canopy-url` can't be combined with `--forward-token`. Canopy checks callers of its own only once it has a second tenant.
 
 ## Connecting an assistant
 
@@ -91,7 +115,7 @@ The server implements the [MCP Apps extension](https://github.com/modelcontextpr
 
 - **Views.** One self-contained HTML bundle, declared twice with `text/html;profile=mcp-app`: `ui://substrate-console/console.html` for the full console and `ui://substrate-console/card.html` for cards in a conversation. Both set `_meta.ui.csp` (`resourceDomains` for fonts only, no `connectDomains`) and `prefersBorder`.
 - **Tools.** Tools with a view carry `_meta.ui.resourceUri` and `_meta.ui.visibility`, plus the deprecated flat `ui/resourceUri` key. Every tool sets `readOnlyHint`, `destructiveHint` and `openWorldHint`. `structuredContent` (with a `kind` field) drives the view; `content` is a text summary for the model.
-- **View.** Follows the host's theme, style variables and safe-area insets. It navigates by calling tools through the host, and it keeps the model told what the user is looking at with `ui/update-model-context`. That context is background context (`audience: ["assistant"]`) with `structuredContent`. It polls only in full screen.
+- **View.** Follows the host's theme, style variables and safe-area insets. It navigates by calling tools through the host, and it keeps the model told what the user is looking at with `ui/update-model-context`. That context is background context (`audience: ["assistant"]`) with `structuredContent`. It polls only in full screen, except a card for an agent session that is working, which follows it until the turn ends. Forms are never polled.
 
 **OpenAI Apps SDK keys**
 
@@ -101,12 +125,12 @@ The server implements the [MCP Apps extension](https://github.com/modelcontextpr
 
 - **Display modes.** Each view resource sets `_meta["openai/ui"]`. The console prefers `fullscreen` and the card prefers `inline`, so ChatGPT picks the mode before the view loads. The view has no expand or collapse buttons, because the host provides them. An inline card's "Open console" link calls `requestDisplayMode` when the user clicks it.
 - **Entrypoints.** `open_console` is the sidebar (`global`) entrypoint and `console_tab` is the thread entrypoint. There is one tool per entrypoint, and both accept `{}`, are app-only and carry a title and light and dark 20×20 icons. The overview is cached in `localStorage`, so the sidebar entrypoint paints at once and then refreshes.
-- **Deep links.** The view reads `hostContext["openai/deepLink"].url` and routes these paths: `/`, `/actors`, `/actors/{atespace}/{name}`, `/atespaces/{atespace}` and `/latency`.
+- **Deep links.** The view reads `hostContext["openai/deepLink"].url` and routes these paths: `/`, `/actors`, `/actors/{atespace}/{name}`, `/atespaces/{atespace}`, `/latency`, and with Canopy `/agents`, `/agents/{id}` and `/sessions/{id}`.
 - **Composer @-mentions.** The server advertises `openai/mentions` with `searchTool: "search_mentions"` (in both `extensions` and `experimental`). The tool returns `resource_link`s to `substrate://actors/{atespace}/{name}` and `substrate://atespaces/{atespace}`, and resource templates make both readable.
 - **Messages.** "Ask" sends `ui/message`. When the host advertises `openai/message`, the question lands in the composer as an editable draft (`send: false`) instead of sending at once.
 - **Not used.** File entrypoints, file resources, form elicitation and WebMCP don't fit a cluster console. Structured settings may come later, once there are settings worth having.
 
-**Writes.** Every write tool takes `dry_run`. The view always does a dry run first and shows what will change before applying it. `revert_actors` and `delete_actors` are marked destructive.
+**Writes.** Every cluster write tool takes `dry_run`. The view always does a dry run first and shows what will change before applying it. `revert_actors` and `delete_actors` are marked destructive.
 
 The local web page (`serve`, then open `/`) is itself a minimal MCP Apps host built on `AppBridge`: it reads the view resource over `/mcp`, applies the resource's CSP, and loads it into a sandboxed iframe. `?mode=inline&tool=get_actor&args={...}` previews the inline card.
 
@@ -130,6 +154,11 @@ The local web page (`serve`, then open `/`) is itself a minimal MCP Apps host bu
 | `delete_template` | destructive | |
 | `open_console`, `console_tab` | app only | Sidebar and thread entrypoints in ChatGPT. |
 | `search_mentions` | app only | Actor and atespace @-mentions in ChatGPT's composer. |
+| `list_agents`, `get_agent` | read | With `--canopy-url`: agents, versions, definitions. |
+| `get_session` | read | A session's transcript, approvals and sandbox. |
+| `start_session` | write | With `dry_run`, the playground form; without, starts the session. |
+| `send_message`, `answer_approval`, `interrupt_session`, `suspend_session`, `resume_session` | write | Act at once and return the session. |
+| `end_session` | destructive | |
 
 ## Layout
 
@@ -138,6 +167,7 @@ cmd/substrate-console   CLI: mcp (stdio), serve (HTTP + web page), version
 internal/mcpapp         MCP server, tools, MCP Apps / OpenAI metadata
 internal/rules          turns a cluster snapshot into "what needs you"
 internal/backend        Backend interface; ate talks to a cluster (real or substrate-fake)
+internal/agents         Canopy: its native API client, the lab SDKs, the transcript
 internal/metrics        Prometheus querier
 internal/shell          HTTP handler for /mcp and the web page
 web/                    Preact view and shell; dist/ is committed and embedded
@@ -146,7 +176,7 @@ agent/                  the coding agent for this repository, run by Canopy
 
 `agent/` defines the agent that works on this repository with [Canopy](https://github.com/alee792/canopy), as the body of Anthropic's `agents.create` plus `AGENTS.md` and skills: `canopy dev agent/` runs it locally, `canopy push agent/` publishes a version. A session needs this repository as a resource, an environment that allows GitHub, the Go module proxy (`proxy.golang.org`, `sum.golang.org`, `storage.googleapis.com`) and `registry.npmjs.org`, and a GitHub credential for the branch push.
 
-Requires Go 1.27 and Node 22. `make test` runs Go vet and tests plus the TypeScript check. CI also checks that `web/dist` matches a fresh build.
+Requires Go 1.27 and Node 22. `make test` runs Go vet and tests plus the TypeScript check. CI also checks that `web/dist` matches a fresh build, and runs the agent tools against a real Canopy (the version `go.mod` pins, with stock Claude Code and Codex and Canopy's scripted model). To run that locally, start `canopy serve` with `local_gateway.mock` and run `CANOPY_TEST_URL=http://127.0.0.1:8000 CANOPY_API_KEY=… CANOPY_TEST_CODEX=1 go test ./internal/mcpapp -run AgainstCanopy`.
 
 ## Known gaps
 
