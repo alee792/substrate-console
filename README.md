@@ -125,7 +125,10 @@ internal/backend        Backend interface; ate talks to a cluster (real or subst
 internal/metrics        Prometheus querier
 internal/shell          HTTP handler for /mcp and the web page
 web/                    Preact view and shell; dist/ is committed and embedded
+agent/                  the coding agent for this repository, run by Canopy
 ```
+
+`agent/` defines the agent that works on this repository with [Canopy](https://github.com/alee792/canopy): `canopy dev agent/` runs it locally, `canopy push agent/` publishes a version.
 
 Requires Go 1.27 and Node 22. `make test` runs Go vet and tests plus the TypeScript check. CI also checks that `web/dist` matches a fresh build.
 
