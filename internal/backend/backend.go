@@ -15,6 +15,12 @@ import (
 // example a metric when no Prometheus is configured.
 var ErrUnsupported = errors.New("not supported by this backend")
 
+// ErrLogsNeedViewer is returned for logs when the caller can't list worker
+// assignments, which takes cluster-wide viewer access. Without the
+// assignment, an actor's lines can't be told from earlier ones on its
+// worker, so none are shown.
+var ErrLogsNeedViewer = errors.New("logs need cluster-wide viewer access, so the console can tell this actor's lines from earlier ones on its worker")
+
 // Backend reads and changes a Substrate cluster.
 type Backend interface {
 	// Snapshot returns the whole cluster as of now.

@@ -19,7 +19,8 @@
 // Substrate's module, so an outside client can't import them. It keeps
 // kubectl-ate's behavior: port-forward to the api Service in ate-system,
 // verify its servicedns certificate against the live ClusterTrustBundle,
-// and authenticate with a minted ate-client ServiceAccount token.
+// and authenticate with a minted ate-client ServiceAccount token unless
+// given another. Forwarding each caller's token is the console's own.
 // Delete this file once Substrate publishes a client module.
 
 package ate
@@ -31,10 +32,18 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
+	"sync"
+	"time"
+
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/status"
 	authv1 "k8s.io/api/authentication/v1"
 	certsv1 "k8s.io/api/certificates/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -46,6 +55,8 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/portforward"
+
+	"github.com/alee792/substrate-console/internal/backend"
 )
 
 const (
@@ -80,41 +91,44 @@ func loadKubeConfig(path, kubeContext string) (*rest.Config, error) {
 }
 
 // dial connects to ateapi. With an empty endpoint it port-forwards to the
-// api Service. It returns the connection and a func that tears it down.
-func dial(ctx context.Context, cfg *rest.Config, cs *kubernetes.Clientset, endpoint, tokenFile string) (*grpc.ClientConn, func(), error) {
+// api Service. It returns the connection, its credentials and a func that
+// tears it down.
+func dial(ctx context.Context, rc *rest.Config, cs kubernetes.Interface, cfg Config) (*grpc.ClientConn, callerCreds, func(), error) {
 	stop := func() {}
+	endpoint := cfg.Endpoint
 	if endpoint == "" {
-		port, s, err := servicePortForward(ctx, cfg, cs, namespace(), apiService(), 443)
+		port, s, err := servicePortForward(ctx, rc, cs, namespace(), apiService(), 443)
 		if err != nil {
-			return nil, nil, fmt.Errorf("port-forward to %s/%s: %w", namespace(), apiService(), err)
+			return nil, callerCreds{}, nil, fmt.Errorf("port-forward to %s/%s: %w", namespace(), apiService(), err)
 		}
 		endpoint, stop = fmt.Sprintf("127.0.0.1:%d", port), s
 	}
 	tlsCfg, err := serverTLSConfig(ctx, cs, apiServerName())
 	if err != nil {
 		stop()
-		return nil, nil, err
+		return nil, callerCreds{}, nil, err
 	}
-	tok, err := bearerToken(ctx, cs, tokenFile)
+	own, err := ownToken(ctx, cs, cfg)
 	if err != nil {
 		stop()
-		return nil, nil, err
+		return nil, callerCreds{}, nil, err
 	}
+	creds := callerCreds{own: own}
 	conn, err := grpc.NewClient(endpoint,
 		grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)),
-		grpc.WithPerRPCCredentials(tok),
+		grpc.WithPerRPCCredentials(creds),
 		grpc.WithDefaultServiceConfig(`{"loadBalancingConfig": [{"round_robin":{}}]}`),
 	)
 	if err != nil {
 		stop()
-		return nil, nil, fmt.Errorf("dial ateapi: %w", err)
+		return nil, callerCreds{}, nil, fmt.Errorf("dial ateapi: %w", err)
 	}
-	return conn, func() { conn.Close(); stop() }, nil
+	return conn, creds, func() { conn.Close(); stop() }, nil
 }
 
 // serverTLSConfig trusts the live servicedns ClusterTrustBundle. It tries
 // the v1 API, then v1beta1 for older clusters.
-func serverTLSConfig(ctx context.Context, cs *kubernetes.Clientset, serverName string) (*tls.Config, error) {
+func serverTLSConfig(ctx context.Context, cs kubernetes.Interface, serverName string) (*tls.Config, error) {
 	opts := metav1.ListOptions{LabelSelector: liveBundleSelector}
 	var bundles []certsv1.ClusterTrustBundle
 	list, err := cs.CertificatesV1().ClusterTrustBundles().List(ctx, opts)
@@ -148,54 +162,166 @@ func serverTLSConfig(ctx context.Context, cs *kubernetes.Clientset, serverName s
 	return &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: pool, ServerName: serverName}, nil
 }
 
-// bearerToken reads tokenFile ("-" for stdin) or mints a one-hour
-// ate-client ServiceAccount token, as kubectl-ate does. The minted token
-// authenticates as that ServiceAccount, not as the person running the
-// console.
-func bearerToken(ctx context.Context, cs *kubernetes.Clientset, tokenFile string) (credentials.PerRPCCredentials, error) {
-	switch tokenFile {
-	case "":
-		exp := int64(3600)
-		tok, err := cs.CoreV1().ServiceAccounts(namespace()).CreateToken(ctx, clientAccount(), &authv1.TokenRequest{
-			Spec: authv1.TokenRequestSpec{Audiences: []string{apiServerName()}, ExpirationSeconds: &exp},
-		}, metav1.CreateOptions{})
-		if err != nil {
-			return nil, fmt.Errorf("request ateapi token: %w", err)
-		}
-		if tok.Status.Token == "" {
-			return nil, fmt.Errorf("request ateapi token: empty response")
-		}
-		return staticToken(tok.Status.Token), nil
-	case "-":
+// ownToken returns the console's own ateapi token: tokenCommand's output,
+// tokenFile ("-" for stdin), a minted token for the person's own
+// ServiceAccount, or else a minted ate-client token, as kubectl-ate does.
+// The ate-client token authenticates as that shared owner account, not as
+// the person running the console. Forward mode has no own token: every
+// call carries the caller's.
+func ownToken(ctx context.Context, cs kubernetes.Interface, cfg Config) (func(context.Context) (string, error), error) {
+	switch {
+	case cfg.Forward:
+		return nil, nil
+	case cfg.TokenCommand != "":
+		return (&cachedToken{fetch: func(ctx context.Context) (string, error) { return runTokenCommand(ctx, cfg.TokenCommand) }}).get, nil
+	case cfg.TokenFile == "-":
 		b, err := io.ReadAll(os.Stdin)
 		if err != nil {
 			return nil, err
 		}
-		return staticToken(strings.TrimSpace(string(b))), nil
+		tok := strings.TrimSpace(string(b))
+		return func(context.Context) (string, error) { return tok, nil }, nil
+	case cfg.TokenFile != "":
+		// Reread on every call, as kubectl-ate does, so a refreshed file
+		// takes effect.
+		return func(context.Context) (string, error) {
+			b, err := os.ReadFile(cfg.TokenFile)
+			if err != nil {
+				return "", fmt.Errorf("read token file: %w", err)
+			}
+			return strings.TrimSpace(string(b)), nil
+		}, nil
 	}
-	return fileToken(tokenFile), nil
+	ns, name, ttl := namespace(), clientAccount(), int64(3600)
+	if cfg.ServiceAccount != "" {
+		ns, name, _ = strings.Cut(cfg.ServiceAccount, "/")
+		// Short-lived, since it's the person's own access; refreshed a
+		// minute before it expires. Kubernetes' minimum is ten minutes.
+		ttl = 900
+	}
+	mint := &cachedToken{fetch: func(ctx context.Context) (string, error) {
+		return mintToken(ctx, cs, ns, name, ttl)
+	}}
+	// Mint once up front so a cluster without Substrate, or a kubeconfig
+	// that may not act as the ServiceAccount, fails at start.
+	if _, err := mint.get(ctx); err != nil {
+		return nil, err
+	}
+	return mint.get, nil
 }
 
-type staticToken string
+// mintToken asks Kubernetes for an ateapi token for a ServiceAccount, with
+// the kubeconfig's own credentials.
+func mintToken(ctx context.Context, cs kubernetes.Interface, ns, name string, ttl int64) (string, error) {
+	tok, err := cs.CoreV1().ServiceAccounts(ns).CreateToken(ctx, name, &authv1.TokenRequest{
+		Spec: authv1.TokenRequestSpec{Audiences: []string{apiServerName()}, ExpirationSeconds: &ttl},
+	}, metav1.CreateOptions{})
+	switch {
+	case apierrors.IsForbidden(err):
+		return "", fmt.Errorf("your Kubernetes account may not get tokens for ServiceAccount %s/%s; it needs create on serviceaccounts/token for it: %w", ns, name, err)
+	case apierrors.IsNotFound(err):
+		return "", fmt.Errorf("ServiceAccount %s/%s doesn't exist: %w", ns, name, err)
+	case err != nil:
+		return "", fmt.Errorf("request ateapi token for %s/%s: %w", ns, name, err)
+	case tok.Status.Token == "":
+		return "", fmt.Errorf("request ateapi token for %s/%s: empty response", ns, name)
+	}
+	return tok.Status.Token, nil
+}
 
-func (t staticToken) GetRequestMetadata(context.Context, ...string) (map[string]string, error) {
-	if t == "" {
+// runTokenCommand runs a command such as `gcloud auth print-identity-token`
+// and returns what it prints.
+func runTokenCommand(ctx context.Context, command string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	cmd.Stderr = os.Stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("token command: %w", err)
+	}
+	tok := strings.TrimSpace(string(out))
+	if tok == "" {
+		return "", fmt.Errorf("token command printed nothing")
+	}
+	return tok, nil
+}
+
+// cachedToken keeps a fetched token until a minute before it expires, or
+// for five minutes when it isn't a JWT and says nothing of its expiry.
+type cachedToken struct {
+	fetch func(context.Context) (string, error)
+	mu    sync.Mutex
+	tok   string
+	until time.Time
+}
+
+func (c *cachedToken) get(ctx context.Context) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.tok != "" && time.Now().Before(c.until) {
+		return c.tok, nil
+	}
+	tok, err := c.fetch(ctx)
+	if err != nil {
+		return "", err
+	}
+	c.tok, c.until = tok, time.Now().Add(5*time.Minute)
+	if _, exp := Claims(tok); !exp.IsZero() {
+		c.until = exp.Add(-time.Minute)
+	}
+	return tok, nil
+}
+
+// Claims reads a JWT's sub and expiry without checking its signature.
+// ateapi checks the token; the console only uses these to label who it
+// acts as and to know when to refresh. Zero values mean it isn't a JWT.
+func Claims(tok string) (sub string, exp time.Time) {
+	parsed, err := jwt.ParseSigned(tok, []jose.SignatureAlgorithm{jose.RS256, jose.RS384, jose.RS512, jose.ES256, jose.ES384, jose.ES512, jose.PS256, jose.EdDSA})
+	if err != nil {
+		return "", time.Time{}
+	}
+	var c jwt.Claims
+	if err := parsed.UnsafeClaimsWithoutVerification(&c); err != nil {
+		return "", time.Time{}
+	}
+	if c.Expiry != nil {
+		exp = c.Expiry.Time()
+	}
+	return c.Subject, exp
+}
+
+// ErrNoCaller is returned in forward mode for a call with no caller token.
+var ErrNoCaller = status.Error(codes.Unauthenticated, "no caller token: in forward mode every request needs the caller's own ateapi token")
+
+// callerCreds sends the caller's token when the context has one, and the
+// console's own otherwise.
+type callerCreds struct {
+	own func(context.Context) (string, error)
+}
+
+func (c callerCreds) token(ctx context.Context) (string, error) {
+	if caller, ok := backend.CallerFrom(ctx); ok {
+		return caller.Token, nil
+	}
+	if c.own == nil {
+		return "", ErrNoCaller
+	}
+	return c.own(ctx)
+}
+
+func (c callerCreds) GetRequestMetadata(ctx context.Context, _ ...string) (map[string]string, error) {
+	tok, err := c.token(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if tok == "" {
 		return nil, fmt.Errorf("bearer token is empty")
 	}
-	return map[string]string{"authorization": "Bearer " + string(t)}, nil
+	return map[string]string{"authorization": "Bearer " + tok}, nil
 }
-func (staticToken) RequireTransportSecurity() bool { return true }
 
-type fileToken string
-
-func (f fileToken) GetRequestMetadata(context.Context, ...string) (map[string]string, error) {
-	b, err := os.ReadFile(string(f))
-	if err != nil {
-		return nil, fmt.Errorf("read token file: %w", err)
-	}
-	return staticToken(strings.TrimSpace(string(b))).GetRequestMetadata(context.Background())
-}
-func (fileToken) RequireTransportSecurity() bool { return true }
+func (callerCreds) RequireTransportSecurity() bool { return true }
 
 // servicePortForward forwards a random local port to servicePort of a
 // Service by picking one ready backing pod, as `kubectl port-forward svc/x`

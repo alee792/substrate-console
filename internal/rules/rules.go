@@ -98,6 +98,7 @@ type Status struct {
 	Counts      map[string]int    `json:"counts"`
 	GeneratedAt time.Time         `json:"generatedAt"`
 	Notes       []string          `json:"notes,omitempty"`
+	Access      model.Access      `json:"access"`
 }
 
 // Thresholds for the stuck-transition rule. Resumes normally take well under
@@ -228,15 +229,29 @@ func (e *Engine) Evaluate(ctx context.Context, c *model.Cluster, scope string, m
 	}
 	sort.Slice(st.Atespaces, func(i, j int) bool { return st.Atespaces[i].Name < st.Atespaces[j].Name })
 
+	st.Access = c.Access
 	if scope == "" {
 		st.Pools = c.Pools
 		st.Summary = fmt.Sprintf("%s · %s · %s", plural(total, "actor"), plural(len(c.Atespaces), "atespace"), plural(len(c.Pools), "pool"))
+		if !c.Access.Workers {
+			st.Summary = fmt.Sprintf("%s · %s", plural(total, "actor"), plural(len(c.Atespaces), "atespace"))
+		}
 	} else {
 		st.Summary = fmt.Sprintf("%s · %d running", plural(total, "actor"), st.Counts["running"])
 	}
 	st.Vitals = e.vitals(ctx, c, scope, metrics, st.Counts, total)
 	if metrics == nil {
 		st.Notes = append(st.Notes, "Resume latency and history need Prometheus. Start with --prometheus-url.")
+	}
+	if !c.Access.AllAtespaces {
+		if len(c.Atespaces) == 0 {
+			st.Notes = append(st.Notes, "You can't list atespaces, and none you can read were named. Ask about one by name, or start the console with --atespaces.")
+		} else {
+			st.Notes = append(st.Notes, fmt.Sprintf("Showing the atespaces you can read: %s. Listing every atespace needs cluster-wide viewer access.", strings.Join(c.Atespaces, ", ")))
+		}
+	}
+	if !c.Access.Workers {
+		st.Notes = append(st.Notes, "Workers, pools and capacity need cluster-wide viewer access, so they're left out.")
 	}
 	return st
 }
@@ -573,6 +588,9 @@ func (e *Engine) vitals(ctx context.Context, c *model.Cluster, scope string, met
 		for w := range workers {
 			cr.Note = "All on " + w
 		}
+	}
+	if !c.Access.Workers {
+		return []Vital{res, dens, cr}
 	}
 	return []Vital{capV, res, dens, cr}
 }

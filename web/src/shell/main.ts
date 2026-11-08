@@ -81,7 +81,7 @@ function askToken(status: HTMLElement, wrong: boolean): Promise<string> {
     input.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
     status.replaceChildren(el("div", { className: "auth" },
       el("h1", { textContent: "This console needs a token" }),
-      el("p", { textContent: wrong ? "That token didn't work." : "Use the one from --auth-token-file, or the link substrate-console printed when it started." }),
+      el("p", { textContent: wrong ? "That token didn't work." : "Use the link substrate-console printed when it started, or the token in --auth-token-file. With --forward-token, use your own ateapi token." }),
       el("div", { className: "row" }, input, go)));
     input.focus();
   });
