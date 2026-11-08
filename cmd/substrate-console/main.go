@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -50,7 +51,7 @@ type flags struct {
 	tokenFile, tokenCommand, sa       string
 	prometheusURL, addr, atespaces    string
 	noFonts, auth, forward            bool
-	authTokenFile                     string
+	authTokenFile, publicURL          string
 }
 
 func main() {
@@ -99,6 +100,7 @@ func newFlagSet(name string, f *flags) *flag.FlagSet {
 	fs.StringVar(&f.addr, "addr", "127.0.0.1:7878", "serve: address to listen on")
 	fs.BoolVar(&f.auth, "auth", false, "serve: require a token on /mcp (on by default beyond loopback); generates one unless --auth-token-file or $SUBSTRATE_CONSOLE_TOKEN sets it")
 	fs.StringVar(&f.authTokenFile, "auth-token-file", "", "serve: file holding the token /mcp requires; implies --auth")
+	fs.StringVar(&f.publicURL, "public-url", "", "serve: the https URL a tunnel or proxy serves the console at, e.g. https://console.example.com; /mcp then accepts that host and requires a token")
 	fs.BoolVar(&f.forward, "forward-token", false, "serve: act as each caller: /mcp requires the caller's own ateapi token and sends it to ateapi, so Substrate's access policies decide what they see")
 	fs.BoolVar(&f.noFonts, "no-web-fonts", false, "use host and system fonts only, so the view's CSP allows no external origins")
 	return fs
@@ -176,13 +178,21 @@ func run(ctx context.Context, cmd string, f flags, log *slog.Logger) error {
 	case "serve":
 		var token string
 		var generated bool
-		var err error
+		publicHost, err := publicHost(f.publicURL)
+		if err != nil {
+			return err
+		}
+		if publicHost != "" && !f.forward {
+			// A tunnel connects from loopback, so without this the server
+			// would think everyone reaching it through the tunnel is you.
+			f.auth = true
+		}
 		if !f.forward {
 			if token, generated, err = serveToken(f); err != nil {
 				return err
 			}
 		}
-		srv := &http.Server{Addr: f.addr, Handler: shell.Handler(app.MCP(), web.ShellHTML, shell.Auth{Token: token, Forward: f.forward}), ReadHeaderTimeout: 10 * time.Second}
+		srv := &http.Server{Addr: f.addr, Handler: shell.Handler(app.MCP(), web.ShellHTML, shell.Auth{Token: token, Forward: f.forward, PublicHost: publicHost}), ReadHeaderTimeout: 10 * time.Second}
 		go func() {
 			<-ctx.Done()
 			sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -200,7 +210,11 @@ func run(ctx context.Context, cmd string, f flags, log *slog.Logger) error {
 			// the logger, so it can't land in a log collector. In the link it
 			// sits in the fragment, which browsers never send to a server.
 			log.Info("console ready; /mcp needs the token printed below", "url", page, "mcp", page+"mcp")
-			fmt.Fprintf(os.Stderr, "\n  Open %s#token=%s\n  Token for MCP hosts: %s\n\n", page, token, token)
+			fmt.Fprintf(os.Stderr, "\n  Open %s#token=%s\n  Token for MCP hosts: %s\n", page, token, token)
+			if publicHost != "" {
+				fmt.Fprintf(os.Stderr, "  Connector URL: %s/mcp?key=%s\n", strings.TrimSuffix(f.publicURL, "/"), token)
+			}
+			fmt.Fprintln(os.Stderr)
 		default:
 			log.Info("console ready; /mcp needs your token", "url", page, "mcp", page+"mcp")
 		}
@@ -284,6 +298,18 @@ func serveToken(f flags) (token string, generated bool, err error) {
 		return "", false, err
 	}
 	return hex.EncodeToString(b), true, nil
+}
+
+// publicHost checks --public-url and returns its host name.
+func publicHost(raw string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || (u.Path != "" && u.Path != "/") || u.RawQuery != "" {
+		return "", fmt.Errorf("--public-url %q: want an https origin such as https://console.example.com", raw)
+	}
+	return u.Hostname(), nil
 }
 
 func isLoopback(addr string) bool {

@@ -38,12 +38,21 @@ func svgData(svg string) string {
 	return "data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString([]byte(svg))
 }
 
-// capabilities advertises the @-mention search tool. The spec reads
-// capabilities["extensions"], or "experimental" on protocol 2025-11-25 and
-// earlier, so it goes in both.
+// capabilities declares the extensions the server uses. MCP Apps is
+// negotiated through the extensions capability (SEP-1724), and Claude
+// Desktop has been seen to show views only from servers that declare it,
+// so the server lists it with the one view type it serves. The OpenAI
+// @-mention search tool is read from capabilities["extensions"], or from
+// "experimental" on protocol 2025-11-25 and earlier, so it goes in both.
 func capabilities() *mcp.ServerCapabilities {
-	ext := map[string]any{"openai/mentions": map[string]any{"searchTool": mentionTool}}
-	return &mcp.ServerCapabilities{Extensions: ext, Experimental: ext}
+	mentions := map[string]any{"searchTool": mentionTool}
+	return &mcp.ServerCapabilities{
+		Extensions: map[string]any{
+			ExtensionID:       map[string]any{"mimeTypes": []string{ViewMIME}},
+			"openai/mentions": mentions,
+		},
+		Experimental: map[string]any{"openai/mentions": mentions},
+	}
 }
 
 // EntryIn is what an entrypoint receives. Hosts send {} when the user opens

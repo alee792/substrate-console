@@ -5,6 +5,7 @@ package shell
 
 import (
 	"crypto/subtle"
+	"net"
 	"net/http"
 	"strings"
 
@@ -19,6 +20,12 @@ type Auth struct {
 	// Forward makes /mcp act as each caller instead: it requires their own
 	// ateapi token and sends it on. Token is then ignored.
 	Forward bool
+	// PublicHost is the host name a tunnel or proxy serves the console
+	// under, such as console.example.com. Requests reaching a loopback
+	// listener normally have to name a loopback host, which stops DNS
+	// rebinding but also stops a tunnel that keeps the public Host header.
+	// With PublicHost set, /mcp accepts loopback hosts and this one.
+	PublicHost string
 }
 
 // Handler returns the HTTP handler for the shell and the MCP endpoint. The
@@ -26,7 +33,16 @@ type Auth struct {
 // itself.
 func Handler(server *mcp.Server, shellHTML []byte, a Auth) http.Handler {
 	mux := http.NewServeMux()
-	var mcpHandler http.Handler = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
+	var opts *mcp.StreamableHTTPOptions
+	if a.PublicHost != "" {
+		// The SDK's check allows loopback hosts only; allowHosts replaces
+		// it with one that also allows the public name.
+		opts = &mcp.StreamableHTTPOptions{DisableLocalhostProtection: true}
+	}
+	var mcpHandler http.Handler = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, opts)
+	if a.PublicHost != "" {
+		mcpHandler = allowHosts(a.PublicHost, mcpHandler)
+	}
 	switch {
 	case a.Forward:
 		mcpHandler = forwardCaller(mcpHandler)
@@ -36,8 +52,8 @@ func Handler(server *mcp.Server, shellHTML []byte, a Auth) http.Handler {
 	// Browsers on other origins can't drive the write tools through the
 	// user's browser. Requests without browser headers (MCP hosts, curl)
 	// pass. DNS rebinding against a loopback listener is handled inside
-	// the SDK's handler, which rejects non-loopback Host headers; keep its
-	// DisableLocalhostProtection off.
+	// the SDK's handler, which rejects non-loopback Host headers, or by
+	// allowHosts when there is a public host name.
 	mux.Handle("/mcp", http.NewCrossOriginProtection().Handler(mcpHandler))
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -67,4 +83,33 @@ func requireToken(token string, next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// allowHosts lets through requests whose Host is a loopback name or the
+// public host, and refuses the rest, as the SDK's own DNS rebinding check
+// does for loopback alone.
+func allowHosts(public string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.EqualFold(hostname(r.Host), public) && !loopback(r.Host) {
+			http.Error(w, "Forbidden: invalid Host header", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func hostname(hostport string) string {
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		return h
+	}
+	return strings.Trim(hostport, "[]")
+}
+
+func loopback(hostport string) bool {
+	h := hostname(hostport)
+	if strings.EqualFold(h, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
 }
