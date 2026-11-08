@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Substrate Console</title>
+<style>
+:root { --bg: #fbfbfa; --fg: #111110; --muted: #77776f; --line: #d6d5ce; --surface: #fff; color-scheme: light; }
+@media (prefers-color-scheme: dark) { :root { --bg: #0a0a0a; --fg: #ededec; --muted: #8b8b85; --line: #2e2e2c; --surface: #111; color-scheme: dark; } }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 13px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+iframe { display: block; border: 0; width: 100%; height: 100%; background: var(--bg); }
+body.inline-preview { height: auto; padding: 2rem 1rem; }
+body.inline-preview iframe { max-width: 46rem; margin: 0 auto; height: 24rem; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+#status { position: fixed; inset: 0; display: grid; place-items: center; color: var(--muted); }
+.ask-panel { position: fixed; right: 1rem; bottom: 1rem; width: min(26rem, calc(100vw - 2rem)); background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 1rem; box-shadow: 0 16px 40px rgba(0,0,0,.18); }
+.ask-panel p { margin: 0 0 .6rem; color: var(--muted); }
+.ask-panel pre { margin: 0 0 .75rem; white-space: pre-wrap; font: 12px/1.5 ui-monospace, Menlo, monospace; }
+.ask-panel .row { display: flex; gap: .5rem; }
+.ask-panel button { font: 500 12px/1 inherit; padding: .45rem .7rem; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--fg); cursor: pointer; }
+.ask-panel button.pri { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.auth { width: min(22rem, calc(100vw - 2rem)); }
+.auth h1 { margin: 0 0 .35rem; font-size: 15px; font-weight: 600; color: var(--fg); }
+.auth p { margin: 0 0 1rem; }
+.auth .row { display: flex; gap: .5rem; }
+.auth input { flex: 1; min-width: 0; font: 13px/1 ui-monospace, Menlo, monospace; padding: .55rem .65rem; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--fg); }
+.auth button { font: 500 13px/1 inherit; padding: .55rem .8rem; border-radius: 6px; border: 1px solid var(--fg); background: var(--fg); color: var(--bg); cursor: pointer; }
+</style>
+</head>
+<body>
+<div id="status">Connecting to substrate-console…</div>
+<script type="module">/*JS*/</script>
+</body>
+</html>
