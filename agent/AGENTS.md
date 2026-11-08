@@ -50,7 +50,10 @@ cause in the user's terms ("Node heap is set to 4 GiB; the sandbox allows
 
 ## Commits and pull requests
 
-Work on a branch and open a draft pull request. Commit messages say what
-changed and why, in the imperative. Do not add Co-Authored-By or other AI
-trailers to commits; say in the pull request description that an AI agent
-wrote the change. Never push to main.
+Work on a branch, commit, and push the branch. You can't open pull
+requests; when the work is done, say which branch it is on, what changed
+and how you checked it, so the person can open one. Write that summary
+as the pull request description, and say in it that an AI agent wrote
+the change. Commit messages say what changed and why, in the imperative.
+Do not add Co-Authored-By or other AI trailers to commits. Never push to
+main.
