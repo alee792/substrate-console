@@ -18,6 +18,17 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Read the private Canopy module
+        # Canopy is a private repository, so go needs a token that can read
+        # it: a fine-grained token with Contents read on alee792/canopy only.
+        env:
+          CANOPY_READ_TOKEN: ${{ secrets.CANOPY_READ_TOKEN }}
+        run: |
+          if [ -z "$CANOPY_READ_TOKEN" ]; then
+            echo "::error::Set the CANOPY_READ_TOKEN secret: a fine-grained token with Contents read on alee792/canopy."
+            exit 1
+          fi
+          git config --global url."https://x-access-token:${CANOPY_READ_TOKEN}@github.com/alee792/canopy".insteadOf https://github.com/alee792/canopy
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -38,6 +49,17 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Read the private Canopy module
+        # Canopy is a private repository, so go needs a token that can read
+        # it: a fine-grained token with Contents read on alee792/canopy only.
+        env:
+          CANOPY_READ_TOKEN: ${{ secrets.CANOPY_READ_TOKEN }}
+        run: |
+          if [ -z "$CANOPY_READ_TOKEN" ]; then
+            echo "::error::Set the CANOPY_READ_TOKEN secret: a fine-grained token with Contents read on alee792/canopy."
+            exit 1
+          fi
+          git config --global url."https://x-access-token:${CANOPY_READ_TOKEN}@github.com/alee792/canopy".insteadOf https://github.com/alee792/canopy
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -73,4 +95,4 @@ jobs:
           CANOPY_TEST_CODEX: "1"
       - name: Canopy's log
         if: failure()
-        run: cat "$RUNNER_TEMP/canopy.log"
+        run: cat "$RUNNER_TEMP/canopy.log" 2>/dev/null || true
